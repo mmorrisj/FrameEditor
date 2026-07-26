@@ -1,0 +1,368 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FrameEditor</title>
+<style>
+  :root {
+    --bg: #14161a; --panel: #1e2127; --edge: #32363e;
+    --text: #e6e8eb; --dim: #9aa0a8; --accent: #4f8ef7; --warn: #e0564f;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.45 system-ui, sans-serif; }
+  main { max-width: 1100px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 20px; margin: 8px 0 16px; }
+  h1 span { color: var(--dim); font-weight: normal; }
+  button, select, input[type=number] {
+    background: var(--panel); color: var(--text); border: 1px solid var(--edge);
+    border-radius: 6px; padding: 6px 12px; font: inherit; cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.danger { color: var(--warn); }
+  button:disabled { opacity: .45; cursor: default; }
+  input[type=number] { width: 5.5em; cursor: text; }
+  .card { background: var(--panel); border: 1px solid var(--edge);
+          border-radius: 10px; padding: 14px; margin-bottom: 14px; }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .dim { color: var(--dim); font-size: 13px; }
+  .grow { flex: 1; }
+  progress { width: 100%; height: 8px; accent-color: var(--accent); }
+
+  /* project list */
+  .proj { display: flex; gap: 12px; align-items: center; padding: 10px 4px;
+          border-bottom: 1px solid var(--edge); }
+  .proj:last-child { border-bottom: none; }
+
+  /* viewer */
+  #stage { position: relative; user-select: none; touch-action: none;
+           background: #000; border-radius: 8px; overflow: hidden;
+           display: flex; justify-content: center; }
+  #stage img { max-width: 100%; max-height: 62vh; display: block; }
+  #sel { position: absolute; border: 2px dashed var(--accent);
+         background: rgba(79,142,247,.15); pointer-events: none; display: none; }
+
+  /* filmstrip */
+  #strip { display: flex; gap: 4px; overflow-x: auto; padding: 8px 2px; }
+  #strip .th { position: relative; flex: 0 0 auto; cursor: pointer;
+               border: 2px solid transparent; border-radius: 4px; }
+  #strip .th.cur { border-color: var(--accent); }
+  #strip .th img { display: block; height: 56px; border-radius: 2px; }
+  #strip .th .n { position: absolute; left: 2px; bottom: 2px; font-size: 10px;
+                  background: rgba(0,0,0,.65); padding: 0 4px; border-radius: 3px; }
+  #strip .th.edited::after { content: ""; position: absolute; top: 3px; right: 3px;
+                  width: 8px; height: 8px; border-radius: 50%; background: var(--warn); }
+  .editedlist a { color: var(--warn); margin-right: 8px; cursor: pointer; }
+  #err { color: var(--warn); white-space: pre-wrap; }
+  a.dl { color: var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <h1>FrameEditor <span id="crumb"></span></h1>
+  <div id="err"></div>
+
+  <!-- ============ home: upload + project list ============ -->
+  <section id="home">
+    <div class="card">
+      <div class="row">
+        <input type="file" id="file" accept="video/*,.mp4,.mov,.mkv,.webm,.m4v,.avi">
+        <button class="primary" id="uploadBtn">Upload &amp; extract</button>
+        <span class="dim">Frames are extracted at the video's own rate; audio is kept aside untouched.</span>
+      </div>
+      <progress id="upProg" max="100" value="0" hidden></progress>
+    </div>
+    <div class="card" id="plist"><span class="dim">Loading projects…</span></div>
+  </section>
+
+  <!-- ============ editor ============ -->
+  <section id="editor" hidden>
+    <div class="card row">
+      <button id="backBtn">&larr; Projects</button>
+      <span id="pname" class="grow"></span>
+      <button class="primary" id="packBtn">Repackage video</button>
+      <a class="dl" id="outLink" hidden>Download result</a>
+    </div>
+    <div class="card" id="jobCard" hidden>
+      <div class="row"><span id="jobText"></span></div>
+      <progress id="jobProg" max="100" value="0"></progress>
+    </div>
+
+    <div class="card">
+      <div id="stage">
+        <img id="frameImg" alt="frame" draggable="false">
+        <div id="sel"></div>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <button id="prevBtn">&larr;</button>
+        <input type="range" id="seek" class="grow" min="1" value="1" step="1">
+        <button id="nextBtn">&rarr;</button>
+        <input type="number" id="frameNum" min="1" value="1">
+        <span class="dim" id="frameTotal"></span>
+      </div>
+      <div id="strip"></div>
+      <div class="dim editedlist" id="editedList"></div>
+    </div>
+
+    <div class="card">
+      <div class="row">
+        <b>Fix region:</b>
+        <span class="dim">drag a box on the frame, then</span>
+        <select id="op">
+          <option value="blur">Blur</option>
+          <option value="pixelate">Pixelate</option>
+          <option value="clone">Clone from previous frame</option>
+        </select>
+        <label class="dim">strength <input type="number" id="strength" min="1" max="100" value="12"></label>
+        <label class="dim">frames <input type="number" id="fromN" min="1" value="1"></label>
+        <span class="dim">to</span>
+        <input type="number" id="toN" min="1" value="1">
+        <button class="primary" id="applyBtn" disabled>Apply</button>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <button id="revertBtn">Revert this frame</button>
+        <a class="dl" id="dlFrame" download>Download frame</a>
+        <label>Replace frame: <input type="file" id="replFile" accept="image/*"></label>
+        <span class="dim">edit externally (GIMP etc.), then upload it back — it is fitted to the video's exact size</span>
+      </div>
+    </div>
+    <p class="dim">Arrow keys step one frame, Shift+arrows step 10. Edited frames get a red dot.
+       Repackaging re-encodes the full video (x264 crf 18) and copies the original audio stream unmodified.</p>
+  </section>
+</main>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const api = async (path, opts) => {
+  const r = await fetch(path, opts);
+  if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+  return r.json();
+};
+const err = m => { $("err").textContent = m || ""; };
+
+let P = null;          // current project status object
+let cur = 1;           // current frame number
+let sel = null;        // normalized {x,y,w,h} selection
+let editVer = 0;       // cache-buster bumped after every edit
+let pollTimer = null;
+
+/* ---------------- home ---------------- */
+async function showHome() {
+  clearInterval(pollTimer); pollTimer = null;
+  P = null; err("");
+  $("editor").hidden = true; $("home").hidden = false; $("crumb").textContent = "";
+  renderProjects(await api("/api/projects"));
+}
+
+function renderProjects(list) {
+  const box = $("plist");
+  box.innerHTML = list.length ? "" : '<span class="dim">No projects yet — upload a video above.</span>';
+  for (const p of list) {
+    const div = document.createElement("div");
+    div.className = "proj";
+    const state = p.state === "extracting" ? `extracting ${p.progress}/${p.total || "?"}` : p.state;
+    div.innerHTML = `<span class="grow">${p.name || p.id}</span>
+      <span class="dim">${p.frames ? p.frames + " frames · " : ""}${state}</span>`;
+    const open = document.createElement("button");
+    open.textContent = "Open"; open.onclick = () => openProject(p.id);
+    const del = document.createElement("button");
+    del.textContent = "Delete"; del.className = "danger";
+    del.onclick = async () => {
+      if (!confirm(`Delete project "${p.name || p.id}" and all its frames?`)) return;
+      await api(`/api/projects/${p.id}`, {method: "DELETE"}); showHome();
+    };
+    div.append(open, del); box.append(div);
+  }
+}
+
+$("uploadBtn").onclick = async () => {
+  const f = $("file").files[0];
+  if (!f) return err("Choose a video file first.");
+  err(""); $("upProg").hidden = false; $("upProg").removeAttribute("value");
+  try {
+    const fd = new FormData(); fd.append("video", f);
+    const {id} = await api("/api/projects", {method: "POST", body: fd});
+    openProject(id);
+  } catch (e) { err("Upload failed: " + e.message); }
+  finally { $("upProg").hidden = true; }
+};
+
+/* ---------------- editor ---------------- */
+async function openProject(id) {
+  err("");
+  P = await api(`/api/projects/${id}/status`);
+  $("home").hidden = true; $("editor").hidden = false;
+  $("crumb").textContent = "· " + (P.name || id);
+  $("pname").textContent = P.name || id;
+  cur = 1; sel = null; hideSel();
+  pollTimer = setInterval(poll, 1000);
+  refreshJobUI(); if (P.state === "ready") initFrames();
+}
+
+async function poll() {
+  if (!P) return;
+  const wasReady = P.state === "ready", hadFrames = !!P.frames;
+  try { P = await api(`/api/projects/${P.id}/status`); } catch { return; }
+  refreshJobUI();
+  if (P.state === "ready" && (!wasReady || !hadFrames)) initFrames();
+}
+
+function refreshJobUI() {
+  const busy = P.state === "extracting" || P.state === "packaging";
+  $("jobCard").hidden = !busy && P.state !== "error";
+  $("packBtn").disabled = busy || !P.frames;
+  if (P.state === "error") {
+    $("jobText").textContent = "Job failed: " + (P.error || "unknown error");
+    $("jobProg").value = 0;
+  } else if (busy) {
+    $("jobText").textContent =
+      (P.state === "extracting" ? "Extracting frames " : "Re-encoding video ") +
+      `${P.progress}/${P.total || "?"}`;
+    $("jobProg").max = P.total || 100; $("jobProg").value = P.progress || 0;
+  }
+  $("outLink").hidden = !P.output || busy;
+  $("outLink").href = `/api/projects/${P.id}/output`;
+  renderEditedList();
+}
+
+function initFrames() {
+  $("seek").max = P.frames; $("frameNum").max = P.frames;
+  $("fromN").max = $("toN").max = P.frames;
+  $("frameTotal").textContent = `/ ${P.frames} · ${P.width}×${P.height} @ ${P.fps} fps`;
+  setFrame(Math.min(cur, P.frames));
+}
+
+function setFrame(n) {
+  if (!P || !P.frames) return;
+  n = Math.max(1, Math.min(P.frames, n));
+  const prevCur = cur; cur = n;
+  $("frameImg").src = `/media/${P.id}/frame/${n}?v=${editVer}`;
+  $("seek").value = n; $("frameNum").value = n;
+  $("dlFrame").href = `/api/projects/${P.id}/frame/${n}/download`;
+  // follow the current frame with the range inputs until the user diverges
+  if (+$("fromN").value === prevCur && +$("toN").value === prevCur) {
+    $("fromN").value = n; $("toN").value = n;
+  }
+  renderStrip();
+}
+
+function renderStrip() {
+  const strip = $("strip"), R = 12;             // thumbnails either side
+  strip.innerHTML = "";
+  const edited = new Set(P.edited || []);
+  for (let n = Math.max(1, cur - R); n <= Math.min(P.frames, cur + R); n++) {
+    const d = document.createElement("div");
+    d.className = "th" + (n === cur ? " cur" : "") + (edited.has(n) ? " edited" : "");
+    d.innerHTML = `<img loading="lazy" src="/media/${P.id}/thumb/${n}?v=${editVer}"><span class="n">${n}</span>`;
+    d.onclick = () => setFrame(n);
+    strip.append(d);
+  }
+}
+
+function renderEditedList() {
+  const box = $("editedList");
+  if (!P.edited || !P.edited.length) { box.textContent = ""; return; }
+  box.textContent = "Edited frames: ";
+  for (const n of P.edited) {
+    const a = document.createElement("a");
+    a.textContent = n; a.onclick = () => setFrame(n); box.append(a);
+  }
+}
+
+/* navigation */
+$("prevBtn").onclick = () => setFrame(cur - 1);
+$("nextBtn").onclick = () => setFrame(cur + 1);
+$("seek").oninput = e => setFrame(+e.target.value);
+$("frameNum").onchange = e => setFrame(+e.target.value);
+$("backBtn").onclick = showHome;
+document.addEventListener("keydown", e => {
+  if (!P || $("editor").hidden || e.target.tagName === "INPUT") return;
+  const step = e.shiftKey ? 10 : 1;
+  if (e.key === "ArrowLeft") { setFrame(cur - step); e.preventDefault(); }
+  if (e.key === "ArrowRight") { setFrame(cur + step); e.preventDefault(); }
+});
+
+/* ---------------- region selection ---------------- */
+const stage = $("stage"), selBox = $("sel"), img = $("frameImg");
+let dragStart = null;
+
+function hideSel() { sel = null; selBox.style.display = "none"; $("applyBtn").disabled = true; }
+
+function imgRect() { return img.getBoundingClientRect(); }
+
+stage.addEventListener("pointerdown", e => {
+  const r = imgRect();
+  if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) return;
+  dragStart = {x: e.clientX, y: e.clientY};
+  stage.setPointerCapture(e.pointerId);
+});
+stage.addEventListener("pointermove", e => {
+  if (!dragStart) return;
+  const r = imgRect();
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+  const x0 = clamp(Math.min(dragStart.x, e.clientX), r.left, r.right);
+  const y0 = clamp(Math.min(dragStart.y, e.clientY), r.top, r.bottom);
+  const x1 = clamp(Math.max(dragStart.x, e.clientX), r.left, r.right);
+  const y1 = clamp(Math.max(dragStart.y, e.clientY), r.top, r.bottom);
+  const st = stage.getBoundingClientRect();
+  Object.assign(selBox.style, {
+    display: "block",
+    left: (x0 - st.left) + "px", top: (y0 - st.top) + "px",
+    width: (x1 - x0) + "px", height: (y1 - y0) + "px",
+  });
+  sel = {x: (x0 - r.left) / r.width, y: (y0 - r.top) / r.height,
+         w: (x1 - x0) / r.width, h: (y1 - y0) / r.height};
+});
+stage.addEventListener("pointerup", () => {
+  dragStart = null;
+  $("applyBtn").disabled = !(sel && sel.w > 0.002 && sel.h > 0.002);
+});
+
+/* ---------------- actions ---------------- */
+$("applyBtn").onclick = async () => {
+  if (!sel) return;
+  err("");
+  try {
+    P = await api(`/api/projects/${P.id}/edit`, {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({from: +$("fromN").value, to: +$("toN").value,
+                            rect: sel, op: $("op").value, strength: +$("strength").value}),
+    });
+    editVer++; setFrame(cur); refreshJobUI();
+  } catch (e) { err("Edit failed: " + e.message); }
+};
+
+$("revertBtn").onclick = async () => {
+  err("");
+  P = await api(`/api/projects/${P.id}/revert`, {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({frame: cur}),
+  });
+  editVer++; setFrame(cur); refreshJobUI();
+};
+
+$("replFile").onchange = async e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  err("");
+  try {
+    const fd = new FormData(); fd.append("image", f);
+    P = await api(`/api/projects/${P.id}/frame/${cur}/replace`, {method: "POST", body: fd});
+    editVer++; setFrame(cur); refreshJobUI();
+  } catch (er) { err("Replace failed: " + er.message); }
+  finally { e.target.value = ""; }
+};
+
+$("packBtn").onclick = async () => {
+  err("");
+  P = await api(`/api/projects/${P.id}/repackage`, {method: "POST"});
+  refreshJobUI();
+};
+
+showHome();
+</script>
+</body>
+</html>

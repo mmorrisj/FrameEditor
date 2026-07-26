@@ -1,0 +1,16 @@
+[Unit]
+Description=FrameEditor web app (Flask, behind Caddy at frameeditor.home)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mmorrisj
+Group=mmorrisj
+WorkingDirectory=/home/mmorrisj/FrameEditor
+ExecStart=/home/mmorrisj/FrameEditor/venv/bin/python app.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
