@@ -1,0 +1,149 @@
+{% extends "base.html" %}
+{% block main %}
+<h1><a href="/">Library</a> / <span id="vname">{{ title }}</span></h1>
+
+<div class="card">
+  <div class="row" style="align-items:flex-start">
+    <video id="player" controls preload="metadata" style="max-width:520px;width:100%;border-radius:6px;background:#000"
+           src="/media/video/{{ vid }}"></video>
+    <div class="col grow">
+      <div id="meta" class="dim"></div>
+      <div class="row">
+        <button id="editBtn">Open in frame editor</button>
+        <button id="sampBtn">Show sample frames</button>
+      </div>
+    </div>
+  </div>
+  <div class="strip" id="strip"></div>
+</div>
+
+<div class="card">
+  <h2>Frames</h2>
+  <div class="row">
+    <select id="mode"></select>
+    <label id="valLbl">value <input type="number" id="val" step="any"></label>
+    <select id="fmt"><option value="jpg">JPEG</option><option value="png">PNG (lossless)</option><option value="webp">WebP</option></select>
+    <label>max width <input type="number" id="width" placeholder="full"></label>
+    <label>limit <input type="number" id="limit" placeholder="none"></label>
+    <button class="primary" id="exBtn">Extract</button>
+  </div>
+  <div class="dim" id="modeHelp" style="margin-top:4px"></div>
+  <progress id="exBar" hidden></progress> <span id="exLbl" class="dim"></span>
+  <table style="margin-top:10px">
+    <thead><tr><th>Extracted</th><th>Mode</th><th class="num">Frames</th><th>Format</th><th></th></tr></thead>
+    <tbody id="runs"></tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h2>Audio</h2>
+  <div class="row">
+    <select id="aFmt"></select>
+    <select id="aTrack"></select>
+    <button class="primary" id="aBtn">Extract audio</button>
+  </div>
+  <progress id="aBar" hidden></progress> <span id="aLbl" class="dim"></span>
+  <table style="margin-top:10px"><tbody id="afiles"></tbody></table>
+</div>
+{% endblock %}
+{% block script %}
+<script>
+const VID = "{{ vid }}";
+const HELP = {
+  all: "Every frame at the video's constant frame rate. Large: a minute of 30 fps video is 1,800 images.",
+  nth: "Keep one frame out of every N.",
+  fps: "Frames per second of video (0.5 = one frame every two seconds).",
+  scene: "The first frame plus one frame per scene change. Threshold 0–1; lower catches subtler cuts (0.3 is a good start).",
+  keyframes: "Only the encoder's keyframes. Fastest, spacing depends on how the video was encoded.",
+};
+let D = null;
+
+async function load() {
+  D = await FK.api(`/api/video/${VID}`);
+  const v = D.video, i = v.info;
+  if (!$("mode").options.length) {
+    for (const [k, t] of Object.entries(D.modes)) $("mode").add(new Option(t, k, false, k === "scene"));
+    for (const [k, t] of Object.entries(D.audio_formats)) $("aFmt").add(new Option(t, k));
+    i.audio.forEach((a, n) => $("aTrack").add(new Option(`Track ${n + 1}: ${a.codec}, ${a.channels ?? "?"} ch`, n)));
+    $("aTrack").hidden = i.audio.length < 2;
+    syncMode();
+  }
+  $("meta").innerHTML = `<div class="mono">${esc(v.path)}</div>
+    <div>${i.width}×${i.height} · ${i.fps} fps · ${FK.dur(i.duration)} · ${i.vcodec} · ${FK.bytes(v.size)} · ${Math.round(i.bitrate / 1000)} kb/s</div>
+    <div>Audio: ${i.audio.length ? i.audio.map(a => `${a.codec} ${a.channels ?? ""}ch ${a.sample_rate ?? ""}Hz`).join("; ") : "none"}</div>`;
+  $("aBtn").disabled = !i.audio.length;
+  if (D.samples) showStrip(D.samples);
+
+  const tb = $("runs");
+  tb.innerHTML = D.runs.length ? "" : '<tr><td colspan="5" class="dim">No frames extracted yet.</td></tr>';
+  for (const r of D.runs) {
+    const tr = document.createElement("tr");
+    const val = r.value != null ? ` (${r.value})` : "";
+    tr.innerHTML = `<td>${FK.when(r.created)}</td><td>${esc(D.modes[r.mode])}${val}${r.width ? ` · ${r.width}px` : ""}</td>
+      <td class="num">${r.count}</td><td>${r.fmt}</td>
+      <td class="row"><a href="/video/${VID}/run/${r.id}">${r.analyzed ? "Browse &amp; analysis" : "Browse / analyze"}</a>
+        <a href="/api/video/${VID}/runs/${r.id}/zip">Download zip</a>
+        <button class="small danger">Delete</button></td>`;
+    tr.querySelector("button").onclick = async () => {
+      if (!confirm(`Delete these ${r.count} extracted frames?`)) return;
+      await FK.api(`/api/video/${VID}/runs/${r.id}`, {method: "DELETE"}); load();
+    };
+    tb.append(tr);
+  }
+  const at = $("afiles");
+  at.innerHTML = D.audio.length ? "" : '<tr><td class="dim">No audio extracted yet.</td></tr>';
+  for (const a of D.audio) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td><a href="/api/video/${VID}/audio/${encodeURIComponent(a.file)}">${esc(a.file)}</a></td>
+      <td class="num">${FK.bytes(a.size)}</td><td class="dim">${FK.when(a.created)}</td>
+      <td><button class="small danger">Delete</button></td>`;
+    tr.querySelector("button").onclick = async () => {
+      await FK.api(`/api/video/${VID}/audio/${encodeURIComponent(a.file)}`, {method: "DELETE"}); load();
+    };
+    at.append(tr);
+  }
+}
+
+function showStrip(n) {
+  $("strip").innerHTML = "";
+  for (let k = 0; k < n; k++) {
+    const img = document.createElement("img");
+    img.src = `/media/sample/${VID}/${k}`; img.loading = "lazy";
+    $("strip").append(img);
+  }
+  $("sampBtn").hidden = true;
+}
+
+function syncMode() {
+  const m = $("mode").value;
+  $("valLbl").hidden = !(m in D.defaults);
+  $("val").value = D.defaults[m] ?? "";
+  $("modeHelp").textContent = HELP[m] || "";
+}
+$("mode").onchange = syncMode;
+
+$("exBtn").onclick = async () => {
+  try {
+    const j = await FK.runJob(`/api/video/${VID}/frames`, {mode: $("mode").value, value: $("val").value,
+      fmt: $("fmt").value, width: $("width").value, limit: $("limit").value}, $("exBar"), $("exLbl"));
+    FK.toast(`Extracted ${j.result.count} frames`); load();
+  } catch (e) { FK.fail(e); load(); }
+};
+$("aBtn").onclick = async () => {
+  try {
+    await FK.runJob(`/api/video/${VID}/audio`, {fmt: $("aFmt").value, stream: $("aTrack").value || 0}, $("aBar"), $("aLbl"));
+    FK.toast("Audio extracted"); load();
+  } catch (e) { FK.fail(e); }
+};
+$("sampBtn").onclick = async () => {
+  try { const j = await FK.runJob(`/api/video/${VID}/samples`, {}, $("exBar"), $("exLbl")); showStrip(j.result); }
+  catch (e) { FK.fail(e); }
+};
+$("editBtn").onclick = async () => {
+  if (!confirm("Copy this video into a new frame editor project? Every frame is extracted as PNG, which needs a lot of disk space.")) return;
+  try { const r = await FK.api("/editor/api/projects/from-library", {json: {video: VID}}); location.href = `/editor/?open=${r.id}`; }
+  catch (e) { FK.fail(e); }
+};
+load().catch(FK.fail);
+</script>
+{% endblock %}

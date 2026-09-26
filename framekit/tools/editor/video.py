@@ -1,7 +1,7 @@
-"""ffmpeg/ffprobe plumbing: probe, extract-to-frames, repackage, job tracking.
+"""Frame editor projects: extract every frame, then repackage with the audio.
 
-All the video I/O lives here, no web. Each project is a directory under
-projects/<id>/ containing:
+All the video I/O for the editor lives here, no web. Each project is a
+directory under work/editor/<id>/ containing:
     original.<ext>   the upload, untouched (also the audio source at repackage)
     frames/f%06d.png full-resolution frames, the editable working set
     thumbs/t%06d.jpg 200px-wide thumbnails for the filmstrip UI
@@ -24,10 +24,14 @@ import shutil
 import subprocess
 import threading
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-PROJECTS = os.path.join(HERE, "projects")
+from ... import config
 
-VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".webm", ".m4v", ".avi"}
+# Projects made before the suite lived in <repo>/projects; keep using that
+# folder if it exists so nothing is orphaned.
+_LEGACY = os.path.join(config.REPO, "projects")
+PROJECTS = _LEGACY if os.path.isdir(_LEGACY) else os.path.join(config.WORK, "editor")
+
+VIDEO_EXTS = config.VIDEO_EXTS
 
 _jobs: dict[str, dict] = {}
 _lock = threading.Lock()
@@ -60,7 +64,8 @@ def probe(path: str) -> dict:
         ["ffprobe", "-v", "error", "-show_entries",
          "stream=codec_type,width,height,avg_frame_rate,r_frame_rate",
          "-show_entries", "format=duration", "-of", "json", path],
-        capture_output=True, text=True, check=True).stdout
+        capture_output=True, text=True, check=True,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
     data = json.loads(out)
     vid = next(s for s in data["streams"] if s.get("codec_type") == "video")
     has_audio = any(s.get("codec_type") == "audio" for s in data["streams"])
@@ -90,7 +95,8 @@ def _run_progress(pid: str, cmd: list[str], total: int) -> None:
     stderr is capped at -loglevel error so it stays within the pipe buffer
     while we consume stdout; we only read it after exit, for the error text.
     """
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     for line in proc.stdout:
         m = re.match(r"frame=(\d+)", line.strip())
         if m:
@@ -103,8 +109,8 @@ def _run_progress(pid: str, cmd: list[str], total: int) -> None:
 
 # --- projects ---------------------------------------------------------------
 
-def create_project(file_storage) -> str:
-    name, ext = os.path.splitext(file_storage.filename)
+def _new_project(filename: str) -> tuple[str, str]:
+    name, ext = os.path.splitext(filename)
     ext = ext.lower()
     if ext not in VIDEO_EXTS:
         raise ValueError(f"unsupported extension {ext!r}")
@@ -112,7 +118,21 @@ def create_project(file_storage) -> str:
     pid = f"{slug}-{secrets.token_hex(3)}"
     d = project_dir(pid)
     os.makedirs(d)
-    file_storage.save(os.path.join(d, "original" + ext))
+    with open(os.path.join(d, "source.txt"), "w", encoding="utf-8") as f:
+        f.write(filename)
+    return pid, os.path.join(d, "original" + ext)
+
+
+def create_project(file_storage) -> str:
+    pid, dst = _new_project(file_storage.filename)
+    file_storage.save(dst)
+    return pid
+
+
+def create_project_from_path(path: str) -> str:
+    """Start a project from a library video (copied, the original is never touched)."""
+    pid, dst = _new_project(os.path.basename(path))
+    shutil.copy2(path, dst)
     return pid
 
 
@@ -189,7 +209,8 @@ def _extract(pid: str) -> None:
         if not count:
             raise RuntimeError("extraction produced no frames")
         info["frames"] = count
-        info["name"] = os.path.basename(src)
+        src_name = os.path.join(d, "source.txt")
+        info["name"] = open(src_name, encoding="utf-8").read().strip() if os.path.exists(src_name)             else os.path.basename(src)
         with open(os.path.join(d, "meta.json"), "w") as f:
             json.dump(info, f)
         _set(pid, state="ready", progress=count, total=count)

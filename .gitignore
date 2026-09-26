@@ -5,5 +5,10 @@ venv/
 __pycache__/
 *.py[cod]
 
-# Uploaded videos, extracted frames, outputs — user data, potentially huge
+# Generated data: index, caches, frames, audio, exports, quarantine — potentially huge
+work/
+# Legacy frame editor projects (pre-suite)
 projects/
+
+# Machine-specific library folders (see framekit.example.json)
+framekit.json

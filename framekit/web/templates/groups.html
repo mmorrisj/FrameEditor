@@ -1,0 +1,163 @@
+{% extends "base.html" %}
+{% block main %}
+<h1>Groups <span>videos clustered by how similar their sampled frames look</span></h1>
+
+<div class="card">
+  <div class="row">
+    <label>Compare by <select id="backend"></select></label>
+    <span class="grow"></span>
+    <span class="dim" id="scope"></span>
+    <button class="primary" id="buildBtn">Group library</button>
+  </div>
+  <div class="dim" style="margin-top:6px">Visual groups by look and composition and needs no downloads. CLIP groups by
+    content ("a red car on a beach") and downloads a model on first use.</div>
+  <progress id="bar" hidden></progress> <span id="barLbl" class="dim"></span>
+  <div id="runs" style="margin-top:10px"></div>
+</div>
+
+<div id="view" class="hidden">
+  <div class="card">
+    <div class="row">
+      <label>Similarity cutoff</label>
+      <input type="range" id="thr" min="0.01" max="0.6" step="0.01" class="grow">
+      <span id="thrVal" class="mono"></span>
+    </div>
+    <div class="dim">Slide left for tighter, smaller groups; right for looser, bigger ones. Moving the slider
+      regroups instantly and discards manual moves.</div>
+    <div class="row" style="margin-top:10px">
+      <span id="gstats" class="grow"></span>
+      <a id="expJson">Export JSON</a><a id="expCsv">Export CSV</a>
+      <button id="copyBtn">Copy into group folders</button>
+      <button id="moveBtn" class="danger">Move files into group folders</button>
+    </div>
+  </div>
+  <div id="groups" class="wide-tiles"></div>
+</div>
+{% endblock %}
+{% block script %}
+<script>
+let RUN = null, VIDS = {}, CUR = null, ids = null, drag = null;
+try { if (location.search.includes("sel=1")) ids = JSON.parse(sessionStorage.getItem("fk.ids") || "null"); } catch {}
+$("scope").textContent = ids ? `${ids.length} selected videos` : "";
+$("buildBtn").textContent = ids ? "Group selection" : "Group library";
+
+async function loadRuns(open) {
+  const d = await FK.api("/api/groups");
+  if (!$("backend").options.length)
+    for (const [k, ok] of Object.entries(d.backends)) {
+      const o = new Option(k === "clip" ? `CLIP (content)${ok ? "" : ", not installed"}` : "Visual (built-in)", k);
+      o.disabled = !ok; o.selected = k === "visual"; $("backend").add(o);
+    }
+  const box = $("runs");
+  box.innerHTML = d.runs.length ? '<div class="dim">Previous groupings:</div>' : "";
+  for (const r of d.runs) {
+    const div = document.createElement("div");
+    div.className = "row";
+    div.innerHTML = `<a href="#">${FK.when(r.created)}</a><span class="dim">${r.videos} videos · ${r.groups} groups · ${r.backend} · cutoff ${r.threshold}</span>
+      <button class="small danger">Delete</button>`;
+    div.querySelector("a").onclick = e => { e.preventDefault(); openRun(r.id); };
+    div.querySelector("button").onclick = async () => {
+      if (!confirm("Delete this grouping? Your videos are not touched.")) return;
+      await FK.api(`/api/groups/${r.id}`, {method: "DELETE"});
+      if (CUR === r.id) { CUR = null; $("view").classList.add("hidden"); }
+      loadRuns();
+    };
+    box.append(div);
+  }
+  if (d.active.length) FK.waitJob(d.active[0].id).then(j => loadRuns(j.result && j.result.run), () => {});
+  if (open) openRun(open);
+  else if (!CUR && d.runs.length && !ids) openRun(d.runs[0].id);
+}
+
+async function openRun(id) {
+  const d = await FK.api(`/api/groups/${id}`);
+  CUR = id; RUN = d.run; VIDS = d.videos;
+  $("view").classList.remove("hidden");
+  $("thr").value = RUN.threshold; $("thrVal").textContent = (+RUN.threshold).toFixed(2);
+  $("expJson").href = `/api/groups/${id}/export?fmt=json`;
+  $("expCsv").href = `/api/groups/${id}/export?fmt=csv`;
+  render();
+}
+
+function render() {
+  const wrap = $("groups");
+  wrap.innerHTML = "";
+  const real = RUN.groups.filter(g => g.id !== "singles");
+  const singles = RUN.groups.find(g => g.id === "singles");
+  $("gstats").innerHTML = `<b>${real.length}</b> groups · <b>${real.reduce((a, g) => a + g.members.length, 0)}</b> grouped videos ·
+    <b>${singles ? singles.members.length : 0}</b> with no close match${RUN.edited ? ' · <span class="dim">edited by hand</span>' : ""}`;
+  for (const g of RUN.groups) {
+    const card = document.createElement("div");
+    card.className = "card";
+    card.innerHTML = `<div class="row" style="margin-bottom:8px">
+        ${g.id === "singles" ? `<b>${esc(g.name)}</b>` : `<input type="text" value="${esc(g.name)}" style="font-weight:600">`}
+        <span class="dim">${g.members.length} videos${g.spread != null ? ` · spread ${g.spread}` : ""}</span></div>
+      <div class="grid"></div>`;
+    const name = card.querySelector("input");
+    if (name) name.onchange = () => act("rename", {group: g.id, name: name.value});
+    const grid = card.querySelector(".grid");
+    for (const vid of g.members) grid.append(tile(vid));
+    card.ondragover = e => { e.preventDefault(); card.style.outline = "2px solid var(--accent)"; };
+    card.ondragleave = () => card.style.outline = "";
+    card.ondrop = e => { e.preventDefault(); card.style.outline = ""; if (drag) act("move", {video: drag, to: g.id}); };
+    wrap.append(card);
+  }
+  const nw = document.createElement("div");
+  nw.className = "card dim";
+  nw.style.cssText = "text-align:center;border-style:dashed";
+  nw.textContent = "Drop a video here to start a new group";
+  nw.ondragover = e => { e.preventDefault(); nw.style.borderColor = "var(--accent)"; };
+  nw.ondragleave = () => nw.style.borderColor = "";
+  nw.ondrop = e => { e.preventDefault(); if (drag) act("move", {video: drag, to: "new"}); };
+  wrap.append(nw);
+}
+
+function tile(vid) {
+  const v = VIDS[vid] || {name: vid};
+  const d = document.createElement("div");
+  d.className = "tile";
+  d.draggable = true;
+  d.title = v.rel || "";
+  d.innerHTML = `<div style="display:flex">${[1, 5, 10].map(k =>
+      `<img loading="lazy" style="width:33.4%;aspect-ratio:16/9;object-fit:cover" src="/media/sample/${vid}/${k}" onerror="this.onerror=null;this.src='/media/sample/${vid}/0'">`).join("")}</div>
+    <div class="cap"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(v.name)}</span><span>${FK.dur(v.duration)}</span></div>`;
+  d.ondragstart = () => { drag = vid; };
+  d.ondragend = () => { drag = null; };
+  d.onclick = () => { location.href = `/video/${vid}`; };
+  return d;
+}
+
+async function act(what, body) {
+  try { const d = await FK.api(`/api/groups/${CUR}/${what}`, {json: body}); RUN = d.run; VIDS = d.videos; render(); }
+  catch (e) { FK.fail(e); }
+}
+
+let thrTimer = null;
+$("thr").oninput = () => {
+  $("thrVal").textContent = (+$("thr").value).toFixed(2);
+  clearTimeout(thrTimer);
+  thrTimer = setTimeout(() => act("threshold", {threshold: $("thr").value}), 250);
+};
+$("buildBtn").onclick = async () => {
+  try {
+    const j = await FK.runJob("/api/groups", {backend: $("backend").value, ids}, $("bar"), $("barLbl"));
+    loadRuns(j.result.run);
+  } catch (e) { FK.fail(e); }
+};
+async function organize(mode) {
+  const msg = mode === "copy"
+    ? "Copy every grouped video into a folder per group under the exports folder? Originals are not touched."
+    : "Move every grouped video into <its folder>/_groups/<group name>/? This is logged and can be undone from the Duplicates page's quarantine list.";
+  if (!confirm(msg)) return;
+  try {
+    const j = await FK.runJob(`/api/groups/${CUR}/organize`, {mode}, $("bar"), $("barLbl"));
+    const r = j.result;
+    FK.toast(`${r.done} files ${mode === "copy" ? `copied to ${r.folder}` : "moved"}${Object.keys(r.failed).length ? `, ${Object.keys(r.failed).length} failed` : ""}`);
+    openRun(CUR);
+  } catch (e) { FK.fail(e); }
+}
+$("copyBtn").onclick = () => organize("copy");
+$("moveBtn").onclick = () => organize("move");
+loadRuns().catch(FK.fail);
+</script>
+{% endblock %}

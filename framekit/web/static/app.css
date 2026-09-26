@@ -1,0 +1,87 @@
+:root {
+  --bg: #14161a; --panel: #1e2127; --panel2: #262a31; --edge: #32363e;
+  --text: #e6e8eb; --dim: #9aa0a8; --accent: #4f8ef7; --warn: #e0564f; --ok: #3fb67a; --amber: #e0a43f;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 system-ui, sans-serif; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+main { max-width: 1280px; margin: 0 auto; padding: 16px; }
+h1 { font-size: 20px; margin: 4px 0 14px; }
+h2 { font-size: 16px; margin: 0 0 10px; }
+h1 span, h2 span { color: var(--dim); font-weight: normal; }
+
+nav.top { display: flex; gap: 4px; align-items: center; padding: 8px 16px; background: var(--panel);
+          border-bottom: 1px solid var(--edge); position: sticky; top: 0; z-index: 20; flex-wrap: wrap; }
+nav.top .brand { font-weight: 600; margin-right: 12px; }
+nav.top a { color: var(--dim); padding: 5px 10px; border-radius: 6px; }
+nav.top a.on, nav.top a:hover { color: var(--text); background: var(--panel2); text-decoration: none; }
+nav.top .spacer { flex: 1; }
+#jobsBtn { position: relative; }
+#jobsBtn .badge { background: var(--accent); color: #fff; border-radius: 9px; padding: 0 6px; font-size: 12px; margin-left: 4px; }
+
+button, select, input[type=number], input[type=text], input[type=search] {
+  background: var(--panel); color: var(--text); border: 1px solid var(--edge);
+  border-radius: 6px; padding: 6px 12px; font: inherit;
+}
+button { cursor: pointer; }
+button:hover:not(:disabled) { border-color: var(--accent); }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.danger { color: var(--warn); }
+button.small { padding: 2px 8px; font-size: 13px; }
+button:disabled { opacity: .45; cursor: default; }
+input[type=number] { width: 6em; }
+input[type=range] { accent-color: var(--accent); }
+label { color: var(--dim); font-size: 14px; }
+
+.card { background: var(--panel); border: 1px solid var(--edge); border-radius: 10px; padding: 14px; margin-bottom: 14px; overflow-x: auto; }
+.row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.row > * { min-width: 0; }
+.col { display: flex; flex-direction: column; gap: 6px; }
+.grow { flex: 1; }
+.dim { color: var(--dim); font-size: 13px; }
+.mono { font-family: ui-monospace, Consolas, monospace; font-size: 13px; overflow-wrap: anywhere; }
+.err { color: var(--warn); white-space: pre-wrap; }
+.ok { color: var(--ok); }
+.tag { display: inline-block; font-size: 12px; padding: 0 7px; border-radius: 9px; background: var(--panel2); color: var(--dim); border: 1px solid var(--edge); }
+.tag.exact { color: var(--ok); } .tag.near { color: var(--amber); }
+progress { width: 100%; height: 8px; accent-color: var(--accent); }
+.hidden { display: none !important; }
+
+table { border-collapse: collapse; width: 100%; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--edge); vertical-align: middle; }
+th { color: var(--dim); font-weight: 500; font-size: 13px; }
+tr:hover td { background: rgba(255,255,255,.02); }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.wide-tiles .grid { grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+.thumb { height: 40px; border-radius: 3px; display: block; background: #000; }
+
+.strip { display: flex; gap: 4px; overflow-x: auto; padding: 4px 0; }
+.strip img { height: 72px; border-radius: 3px; }
+
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+.tile { position: relative; background: #000; border-radius: 5px; overflow: hidden; border: 2px solid transparent; cursor: pointer; }
+.tile img { width: 100%; display: block; }
+.tile .cap { position: absolute; left: 0; right: 0; bottom: 0; font-size: 11px; padding: 2px 5px;
+             background: rgba(0,0,0,.7); display: flex; justify-content: space-between; gap: 4px; }
+.tile.ex { opacity: .3; }
+.tile.cut { border-left-color: var(--amber); border-left-width: 4px; }
+.tile.drag-over { border-color: var(--accent); }
+.tile .cl { position: absolute; top: 3px; left: 3px; font-size: 11px; padding: 0 5px; border-radius: 6px; color: #000; font-weight: 600; }
+
+#jobs { position: fixed; right: 12px; top: 52px; width: 380px; max-height: 70vh; overflow-y: auto; z-index: 30;
+        background: var(--panel); border: 1px solid var(--edge); border-radius: 10px; padding: 10px;
+        box-shadow: 0 8px 30px rgba(0,0,0,.5); }
+#jobs .job { padding: 8px 4px; border-bottom: 1px solid var(--edge); font-size: 13px; }
+#jobs .job:last-child { border-bottom: none; }
+#toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: 20px; background: var(--panel2);
+         border: 1px solid var(--edge); padding: 10px 16px; border-radius: 8px; z-index: 40; max-width: 90vw; }
+#toast.bad { border-color: var(--warn); color: var(--warn); }
+
+@media (max-width: 640px) {
+  main { padding: 10px; }
+  body { font-size: 14px; }
+  td .mono { display: none; }
+  #jobs { left: 8px; right: 8px; width: auto; }
+  .hide-sm { display: none; }
+}

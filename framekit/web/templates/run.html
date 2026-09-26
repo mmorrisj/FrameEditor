@@ -1,0 +1,185 @@
+{% extends "base.html" %}
+{% block main %}
+<h1><a href="/">Library</a> / <a href="/video/{{ vid }}">{{ title }}</a> / <span id="rname">frames</span></h1>
+
+<div class="card">
+  <div id="noAna" class="row hidden">
+    <b>Analyze these frames</b>
+    <span class="dim">finds shots, duplicate frames and clusters, and unlocks ordering.</span>
+    <select id="backend"></select>
+    <button class="primary" id="anaBtn">Analyze</button>
+  </div>
+  <div id="ana" class="hidden">
+    <div class="row">
+      <span id="stats" class="grow"></span>
+      <button class="small" id="reanaBtn">Re-analyze</button>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <label>shot cut above <input type="number" id="shotT" step="0.01" min="0" max="2"></label>
+      <label>cluster distance <input type="number" id="clT" step="0.01" min="0" max="2"></label>
+      <label>duplicate within <input type="number" id="dupT" step="1" min="0" max="64"> bits</label>
+      <button id="paramBtn">Apply</button>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <label>Order <select id="order">
+        <option value="chronological">Chronological</option>
+        <option value="cluster">Grouped by cluster</option>
+        <option value="chain">Similarity chain</option>
+        <option value="custom">Custom (drag to reorder)</option>
+      </select></label>
+      <label>View <select id="view"><option value="order">Grid in order</option><option value="clusters">Sections per cluster</option></select></label>
+      <label><input type="checkbox" id="showEx" checked> show excluded</label>
+    </div>
+    <div class="dim" style="margin-top:6px">Click a frame to exclude or include it. Duplicate frames start excluded.
+      A yellow left edge marks the first frame of a shot. Exports use the current order and skip excluded frames.</div>
+  </div>
+  <progress id="bar" hidden></progress> <span id="barLbl" class="dim"></span>
+</div>
+
+<div class="card">
+  <div class="row">
+    <b>Export</b>
+    <a id="zipAll">All frames (zip)</a>
+    <span class="needs-ana row">
+      <a id="zipOrd">Ordered frames (zip)</a>
+      <a id="zipCl">Folder per cluster (zip)</a>
+      <a id="sheet">Contact sheet</a>
+      <label>fps <input type="number" id="fps" value="24" step="any" min="0.1"></label>
+      <button id="renderBtn">Render ordered video</button>
+    </span>
+  </div>
+</div>
+
+<div id="gridWrap"></div>
+{% endblock %}
+{% block script %}
+<script>
+const VID = "{{ vid }}", RUN = "{{ run }}";
+const base = `/api/video/${VID}/runs/${RUN}`;
+let R = null, A = null, dragFrom = null;
+
+const color = c => `hsl(${(c * 137.5) % 360} 70% 62%)`;
+
+async function load() {
+  const d = await FK.api(base);
+  R = d.run; A = d.analysis;
+  $("rname").textContent = `${R.count} frames · ${R.mode}${R.value != null ? ` ${R.value}` : ""}`;
+  if (!$("backend").options.length)
+    for (const [k, ok] of Object.entries(d.backends))
+      $("backend").add(new Option(k === "clip" ? `CLIP (content)${ok ? "" : ", not installed"}` : "Visual (built-in)", k, false, k === "visual"));
+  [...$("backend").options].forEach(o => o.disabled = !d.backends[o.value]);
+  $("zipAll").href = `${base}/zip`;
+  $("zipOrd").href = `${base}/export/ordered`;
+  $("zipCl").href = `${base}/export/clusters`;
+  $("sheet").href = `${base}/export/sheet`;
+  $("noAna").classList.toggle("hidden", !!A);
+  $("ana").classList.toggle("hidden", !A);
+  document.querySelectorAll(".needs-ana").forEach(e => e.classList.toggle("hidden", !A));
+  if (A) fillAna();
+  render();
+}
+
+function fillAna() {
+  A.exSet = new Set(A.excluded);
+  A.cutSet = new Set(A.shots.map(s => s[0]).filter(i => i > 0));
+  const dup = A.dup_of.filter(x => x != null).length;
+  $("stats").innerHTML = `<b>${A.clusters.length}</b> frames · <b>${A.shots.length}</b> shots · <b>${A.n_clusters}</b> clusters ·
+    <b>${dup}</b> duplicate frames · <b>${A.excluded.length}</b> excluded <span class="dim">(${A.backend})</span>`;
+  $("shotT").value = A.params.shot_threshold;
+  $("clT").value = A.params.cluster_threshold;
+  $("dupT").value = A.params.dup_threshold;
+  $("order").value = A.order_mode;
+}
+
+function tile(i) {
+  const fr = R.frames[i];
+  const d = document.createElement("div");
+  d.className = "tile";
+  d.dataset.i = i;
+  const t = fr.t != null ? `${fr.t.toFixed(2)}s` : "";
+  let badge = "";
+  if (A) {
+    const c = A.clusters[i];
+    badge = `<span class="cl" style="background:${color(c)}">${c + 1}</span>`;
+    if (A.exSet.has(i)) d.classList.add("ex");
+    if (A.cutSet.has(i)) d.classList.add("cut");
+  }
+  d.innerHTML = `<img loading="lazy" src="/media/run/${VID}/${RUN}/thumb/${fr.n}">${badge}
+    <div class="cap"><span>#${fr.n}${A && A.dup_of[i] != null ? ` = #${R.frames[A.dup_of[i]].n}` : ""}</span><span>${t}</span>
+    <a href="/media/run/${VID}/${RUN}/full/${fr.n}" target="_blank" onclick="event.stopPropagation()">full</a></div>`;
+  if (A) {
+    d.onclick = () => toggle(i);
+    if (A.order_mode === "custom") {
+      d.draggable = true;
+      d.ondragstart = () => { dragFrom = i; };
+      d.ondragover = e => { e.preventDefault(); d.classList.add("drag-over"); };
+      d.ondragleave = () => d.classList.remove("drag-over");
+      d.ondrop = e => { e.preventDefault(); d.classList.remove("drag-over"); dropBefore(i); };
+    }
+  } else {
+    d.onclick = () => window.open(`/media/run/${VID}/${RUN}/full/${fr.n}`, "_blank");
+  }
+  return d;
+}
+
+function render() {
+  const wrap = $("gridWrap");
+  wrap.innerHTML = "";
+  const showEx = $("showEx").checked;
+  let order = A ? A.order : R.frames.map((_, i) => i);
+  if (A && !showEx) order = order.filter(i => !A.exSet.has(i));
+  if (A && $("view").value === "clusters") {
+    const by = new Map();
+    for (const i of order) { const c = A.clusters[i]; if (!by.has(c)) by.set(c, []); by.get(c).push(i); }
+    for (const [c, list] of [...by.entries()].sort((a, b) => a[0] - b[0])) {
+      const card = document.createElement("div");
+      card.className = "card";
+      card.innerHTML = `<h2><span class="cl tag" style="background:${color(c)};color:#000">Cluster ${c + 1}</span> <span>${list.length} frames</span></h2>`;
+      const g = document.createElement("div"); g.className = "grid";
+      list.forEach(i => g.append(tile(i)));
+      card.append(g); wrap.append(card);
+    }
+  } else {
+    const card = document.createElement("div"); card.className = "card";
+    const g = document.createElement("div"); g.className = "grid";
+    order.forEach(i => g.append(tile(i)));
+    card.append(g); wrap.append(card);
+  }
+}
+
+async function update(body) {
+  try { A = (await FK.api(`${base}/analysis`, {json: body})).analysis; fillAna(); render(); }
+  catch (e) { FK.fail(e); }
+}
+function toggle(i) { update(A.exSet.has(i) ? {include: [i]} : {exclude: [i]}); }
+function dropBefore(target) {
+  if (dragFrom == null || dragFrom === target) return;
+  const o = A.order.filter(i => i !== dragFrom);
+  o.splice(o.indexOf(target), 0, dragFrom);
+  dragFrom = null;
+  update({order: "custom", custom: o});
+}
+
+async function analyze() {
+  try {
+    await FK.runJob(`${base}/analyze`, {backend: $("backend").value || A?.backend || "visual"}, $("bar"), $("barLbl"));
+    load();
+  } catch (e) { FK.fail(e); }
+}
+$("anaBtn").onclick = analyze;
+$("reanaBtn").onclick = () => { if (confirm("Re-analyze from scratch? Manual exclusions and custom order are reset.")) analyze(); };
+$("paramBtn").onclick = () => update({params: {shot_threshold: $("shotT").value, cluster_threshold: $("clT").value, dup_threshold: $("dupT").value}});
+$("order").onchange = () => update({order: $("order").value});
+$("view").onchange = render;
+$("showEx").onchange = render;
+$("renderBtn").onclick = async () => {
+  try {
+    const j = await FK.runJob(`${base}/render`, {fps: $("fps").value}, $("bar"), $("barLbl"));
+    const name = j.result.split(/[\\/]/).pop();
+    FK.toast("Rendered. Downloading…");
+    location.href = `/api/exports/${encodeURIComponent(name)}`;
+  } catch (e) { FK.fail(e); }
+};
+load().catch(FK.fail);
+</script>
+{% endblock %}

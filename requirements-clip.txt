@@ -1,0 +1,4 @@
+# Optional: content-based grouping and frame analysis with CLIP.
+# For a CUDA build of torch, install it first from https://pytorch.org.
+torch>=2.1
+transformers>=4.40

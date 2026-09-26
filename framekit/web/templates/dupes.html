@@ -1,0 +1,218 @@
+{% extends "base.html" %}
+{% block main %}
+<h1>Duplicate videos</h1>
+
+<div class="card">
+  <div class="row">
+    <label><input type="checkbox" id="deep"> Deep scan: also find trimmed copies (decodes every video, slower)</label>
+    <label><input type="checkbox" id="audio"> Compare audio fingerprints <span id="audioNote"></span></label>
+    <label>match within <input type="number" id="nearT" value="10" min="0" max="32"> bits</label>
+    <span class="grow"></span>
+    <span class="dim" id="scope"></span>
+    <button class="primary" id="scanBtn">Scan library</button>
+  </div>
+  <div class="dim" style="margin-top:6px">Exact copies are confirmed byte for byte. Re-encodes are matched by
+    comparing frames at the same points in each video; raise the bit threshold to catch heavier re-compression.</div>
+  <progress id="bar" hidden></progress> <span id="barLbl" class="dim"></span>
+</div>
+
+<div id="summary" class="card hidden"></div>
+<div id="sets"></div>
+<div id="contained"></div>
+
+<div class="card">
+  <h2>Quarantine <span class="dim" id="qFolder"></span></h2>
+  <div class="dim" style="margin-bottom:8px">Removed videos are moved here, never deleted. Undo puts every file of a
+    batch back where it was. Deleting a batch erases its files for good.</div>
+  <div id="batches"></div>
+</div>
+{% endblock %}
+{% block script %}
+<script>
+let REP = null, ids = null;
+const choice = {};  // set id -> {keeper, remove:Set}
+try { if (location.search.includes("sel=1")) ids = JSON.parse(sessionStorage.getItem("fk.ids") || "null"); } catch {}
+$("scope").textContent = ids ? `${ids.length} selected videos` : "";
+$("scanBtn").textContent = ids ? "Scan selection" : "Scan library";
+
+async function load() {
+  const d = await FK.api("/api/dupes/report");
+  $("audio").disabled = !d.audio_fp;
+  $("audioNote").innerHTML = d.audio_fp ? "" : '<span class="dim">(needs Chromaprint fpcalc on PATH)</span>';
+  REP = d.report;
+  if (d.active.length) { FK.toast("A duplicate scan is running…"); FK.waitJob(d.active[0].id).then(load, FK.fail); }
+  render();
+  loadBatches();
+}
+
+function vidRow(set, m) {
+  const c = choice[set.id];
+  const tr = document.createElement("tr");
+  const gone = m.removed;
+  const t = new Date(m.mtime * 1000).toLocaleDateString();
+  tr.innerHTML = `<td><input type="radio" name="k-${set.id}" ${c.keeper === m.id ? "checked" : ""} ${gone ? "disabled" : ""} title="Keep this one"></td>
+    <td><input type="checkbox" ${c.remove.has(m.id) ? "checked" : ""} ${gone || c.keeper === m.id ? "disabled" : ""} title="Remove"></td>
+    <td><img class="thumb" loading="lazy" src="/media/sample/${m.id}/${2}"></td>
+    <td>${gone ? `<s>${esc(m.name)}</s> <span class="dim">quarantined</span>` : `<a href="/video/${m.id}">${esc(m.name)}</a>`}${m.identical ? ' <span class="tag exact">identical to keeper</span>' : ""}
+      <div class="dim mono">${esc(m.path)}</div></td>
+    <td class="num">${m.width}×${m.height}</td><td class="num">${Math.round(m.bitrate / 1000)} kb/s</td>
+    <td class="num">${FK.dur(m.duration)}</td><td class="num">${FK.bytes(m.size)}</td><td class="dim">${t}</td>`;
+  const [radio, box] = tr.querySelectorAll("input");
+  radio.onchange = () => { c.keeper = m.id; c.remove.delete(m.id);
+    for (const o of set.members) if (o.id !== m.id && !o.removed) c.remove.add(o.id);
+    renderSets(); };
+  box.onchange = () => { box.checked ? c.remove.add(m.id) : c.remove.delete(m.id); summary(); };
+  return tr;
+}
+
+function render() {
+  if (!REP) { $("summary").classList.add("hidden"); $("sets").innerHTML = ""; return; }
+  for (const s of REP.sets) if (!choice[s.id]) {
+    const live = s.members.filter(m => !m.removed);
+    const keeper = live.some(m => m.id === s.keeper) ? s.keeper : (live[0] || {}).id;
+    choice[s.id] = {keeper, remove: new Set(live.filter(m => m.id !== keeper).map(m => m.id)), on: true};
+  }
+  renderSets();
+}
+
+function summary() {
+  const box = $("summary");
+  box.classList.remove("hidden");
+  let n = 0, bytes = 0;
+  for (const s of REP.sets) {
+    if (!choice[s.id].on) continue;
+    for (const m of s.members) if (choice[s.id].remove.has(m.id) && !m.removed) { n++; bytes += m.size; }
+  }
+  const errs = Object.values(REP.errors || {});
+  box.innerHTML = `<div class="row"><div class="grow">Scanned <b>${REP.scanned}</b> videos on ${FK.when(REP.created)}${REP.deep ? " (deep)" : ""}.
+      Found <b>${REP.sets.length}</b> duplicate sets${REP.contained.length ? ` and <b>${REP.contained.length}</b> trimmed copies` : ""}.
+      ${REP.audio_note ? `<div class="dim">${esc(REP.audio_note)}</div>` : ""}
+      ${errs.length ? `<div class="err">${errs.length} videos could not be read: ${errs.slice(0, 3).map(e => esc(e.path)).join(", ")}${errs.length > 3 ? "…" : ""}</div>` : ""}</div>
+    <button class="primary" id="qBtn" ${n ? "" : "disabled"}>Quarantine ${n} files (${FK.bytes(bytes)})</button></div>`;
+  $("qBtn").onclick = quarantine;
+}
+
+function renderSets() {
+  const wrap = $("sets");
+  wrap.innerHTML = "";
+  for (const s of REP.sets) {
+    const c = choice[s.id];
+    const card = document.createElement("div");
+    card.className = "card";
+    const why = [...new Set(s.reasons.map(r => r.why))].slice(0, 3).join("; ");
+    card.innerHTML = `<div class="row" style="margin-bottom:6px">
+        <label><input type="checkbox" class="on" ${c.on ? "checked" : ""}> include</label>
+        <span class="tag ${s.kind}">${s.kind === "exact" ? "identical files" : "same video, different encode"}</span>
+        <span class="dim grow">${esc(why)}</span>
+        <button class="small cmp">Compare side by side</button></div>
+      <table><thead><tr><th title="keep">Keep</th><th>Remove</th><th></th><th>File</th><th class="num">Size px</th>
+        <th class="num">Bitrate</th><th class="num">Length</th><th class="num">Bytes</th><th>Modified</th></tr></thead><tbody></tbody></table>
+      <div class="cmpbox row hidden" style="margin-top:8px"></div>`;
+    const tb = card.querySelector("tbody");
+    s.members.forEach(m => tb.append(vidRow(s, m)));
+    card.querySelector(".on").onchange = e => { c.on = e.target.checked; summary(); };
+    card.querySelector(".cmp").onclick = () => compare(card.querySelector(".cmpbox"), s.members.filter(m => !m.removed));
+    wrap.append(card);
+  }
+  const cw = $("contained");
+  cw.innerHTML = "";
+  if (REP.contained.length) {
+    const card = document.createElement("div");
+    card.className = "card";
+    card.innerHTML = `<h2>Trimmed copies <span>shorter clips found inside longer videos. Not removed automatically: the trim may be the one you want.</span></h2><table><tbody></tbody></table>`;
+    for (const x of REP.contained) {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `<td><a href="/video/${x.short}">${esc(x.short_v.name)}</a> <span class="dim">${FK.dur(x.short_v.duration)}</span></td>
+        <td class="dim">appears at ${FK.dur(x.offset)} in</td>
+        <td><a href="/video/${x.long}">${esc(x.long_v.name)}</a> <span class="dim">${FK.dur(x.long_v.duration)}</span></td>
+        <td class="dim">match ${x.score}/64 bits</td><td><button class="small">Compare</button></td>`;
+      const box = document.createElement("tr");
+      box.innerHTML = `<td colspan="5"><div class="row hidden"></div></td>`;
+      tr.querySelector("button").onclick = () => compare(box.querySelector("div"), [x.short_v, x.long_v], [0, x.offset]);
+      card.querySelector("tbody").append(tr, box);
+    }
+    cw.append(card);
+  }
+  summary();
+}
+
+/* synced players: play/pause/seek on the first drives the others */
+function compare(box, members, offsets) {
+  if (!box.classList.contains("hidden")) { box.classList.add("hidden"); box.innerHTML = ""; return; }
+  box.classList.remove("hidden");
+  const vs = members.map((m, k) => {
+    const d = document.createElement("div");
+    d.className = "col"; d.style.flex = "1 1 280px";
+    d.innerHTML = `<video src="/media/video/${m.id}" preload="metadata" ${k === 0 ? "controls" : "muted"} style="width:100%;background:#000;border-radius:4px"></video>
+      <span class="dim">${esc(m.name)} · ${m.width}×${m.height}</span>`;
+    box.append(d);
+    return d.querySelector("video");
+  });
+  const off = offsets || vs.map(() => 0);
+  const lead = vs[0];
+  const sync = () => vs.slice(1).forEach((v, k) => { v.currentTime = lead.currentTime + off[k + 1]; });
+  lead.onplay = () => { sync(); vs.slice(1).forEach(v => v.play()); };
+  lead.onpause = () => vs.slice(1).forEach(v => v.pause());
+  lead.onseeked = sync;
+  lead.onloadedmetadata = sync;
+}
+
+async function quarantine() {
+  const selections = REP.sets.filter(s => choice[s.id].on && choice[s.id].remove.size)
+    .map(s => ({set: s.id, keeper: choice[s.id].keeper, remove: [...choice[s.id].remove]}));
+  const n = selections.reduce((a, s) => a + s.remove.length, 0);
+  if (!confirm(`Move ${n} files to quarantine? You can undo this below.`)) return;
+  try {
+    const r = await FK.api("/api/dupes/remove", {json: {selections, report: REP.id}});
+    FK.toast(`Moved ${r.moved} files to quarantine${Object.keys(r.failed).length ? `, ${Object.keys(r.failed).length} failed` : ""}`);
+    for (const k in choice) delete choice[k];
+    load();
+  } catch (e) { FK.fail(e); }
+}
+
+async function loadBatches() {
+  const d = await FK.api("/api/quarantine");
+  $("qFolder").textContent = d.folder;
+  const box = $("batches");
+  box.innerHTML = d.batches.length ? "" : '<div class="dim">Nothing in quarantine.</div>';
+  for (const b of d.batches) {
+    const live = b.files - b.restored - b.purged;
+    const div = document.createElement("div");
+    div.style.cssText = "padding:8px 0;border-bottom:1px solid var(--edge)";
+    const status = live ? `${live} files held` : b.purged ? "deleted" : "undone";
+    const title = {organize: "Organized into folders", unique: "Near-duplicate frames"}[b.label] || "Quarantined videos";
+    div.innerHTML = `<div class="row"><b>${title}</b>
+        <span class="dim">${FK.when(b.at)} · ${b.files} files · ${status}</span><span class="grow"></span>
+        <button class="small undo" ${live ? "" : "disabled"}>Undo</button>
+        ${b.label !== "organize" ? `<button class="small danger purge" ${live ? "" : "disabled"}>Delete permanently</button>` : ""}
+        <button class="small files">Files</button></div>
+      <div class="dim mono hidden">${b.files_list.map(f => `${f.restored ? "restored" : f.purged ? "deleted" : "held"}: ${esc(f.src)}`).join("<br>")}</div>`;
+    const undo = div.querySelector(".undo"), purge = div.querySelector(".purge"), files = div.querySelector(".files");
+    undo.onclick = async () => {
+      try { const r = await FK.api(`/api/quarantine/${b.batch}/undo`, {method: "POST"});
+        FK.toast(`Restored ${r.restored} files${r.skipped.length ? `, ${r.skipped.length} skipped` : ""}`); load(); }
+      catch (e) { FK.fail(e); }
+    };
+    if (purge) purge.onclick = async () => {
+      if (prompt(`This erases ${live} files permanently. Type DELETE to confirm.`) !== "DELETE") return;
+      try { const r = await FK.api(`/api/quarantine/${b.batch}/purge`, {json: {confirm: b.batch}});
+        FK.toast(`Deleted ${r.deleted} files`); loadBatches(); }
+      catch (e) { FK.fail(e); }
+    };
+    files.onclick = () => div.querySelector(".mono").classList.toggle("hidden");
+    box.append(div);
+  }
+}
+
+$("scanBtn").onclick = async () => {
+  try {
+    const j = await FK.runJob("/api/dupes/scan", {deep: $("deep").checked, audio: $("audio").checked,
+      near_threshold: $("nearT").value, ids}, $("bar"), $("barLbl"));
+    for (const k in choice) delete choice[k];
+    FK.toast(`${j.result.sets} duplicate sets found`);
+    load();
+  } catch (e) { FK.fail(e); }
+};
+load().catch(FK.fail);
+</script>
+{% endblock %}
