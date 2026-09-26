@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>FrameEditor</title>
+<title>Frame editor · FrameKit</title>
 <style>
   :root {
     --bg: #14161a; --panel: #1e2127; --edge: #32363e;
@@ -61,7 +61,7 @@
 </head>
 <body>
 <main>
-  <h1>FrameEditor <span id="crumb"></span></h1>
+  <h1><a href="/" style="color:var(--dim);text-decoration:none">FrameKit</a> / Frame editor <span id="crumb"></span></h1>
   <div id="err"></div>
 
   <!-- ============ home: upload + project list ============ -->
@@ -154,7 +154,7 @@ async function showHome() {
   clearInterval(pollTimer); pollTimer = null;
   P = null; err("");
   $("editor").hidden = true; $("home").hidden = false; $("crumb").textContent = "";
-  renderProjects(await api("/api/projects"));
+  renderProjects(await api("/editor/api/projects"));
 }
 
 function renderProjects(list) {
@@ -172,7 +172,7 @@ function renderProjects(list) {
     del.textContent = "Delete"; del.className = "danger";
     del.onclick = async () => {
       if (!confirm(`Delete project "${p.name || p.id}" and all its frames?`)) return;
-      await api(`/api/projects/${p.id}`, {method: "DELETE"}); showHome();
+      await api(`/editor/api/projects/${p.id}`, {method: "DELETE"}); showHome();
     };
     div.append(open, del); box.append(div);
   }
@@ -184,7 +184,7 @@ $("uploadBtn").onclick = async () => {
   err(""); $("upProg").hidden = false; $("upProg").removeAttribute("value");
   try {
     const fd = new FormData(); fd.append("video", f);
-    const {id} = await api("/api/projects", {method: "POST", body: fd});
+    const {id} = await api("/editor/api/projects", {method: "POST", body: fd});
     openProject(id);
   } catch (e) { err("Upload failed: " + e.message); }
   finally { $("upProg").hidden = true; }
@@ -193,7 +193,7 @@ $("uploadBtn").onclick = async () => {
 /* ---------------- editor ---------------- */
 async function openProject(id) {
   err("");
-  P = await api(`/api/projects/${id}/status`);
+  P = await api(`/editor/api/projects/${id}/status`);
   $("home").hidden = true; $("editor").hidden = false;
   $("crumb").textContent = "· " + (P.name || id);
   $("pname").textContent = P.name || id;
@@ -205,7 +205,7 @@ async function openProject(id) {
 async function poll() {
   if (!P) return;
   const wasReady = P.state === "ready", hadFrames = !!P.frames;
-  try { P = await api(`/api/projects/${P.id}/status`); } catch { return; }
+  try { P = await api(`/editor/api/projects/${P.id}/status`); } catch { return; }
   refreshJobUI();
   if (P.state === "ready" && (!wasReady || !hadFrames)) initFrames();
 }
@@ -224,7 +224,7 @@ function refreshJobUI() {
     $("jobProg").max = P.total || 100; $("jobProg").value = P.progress || 0;
   }
   $("outLink").hidden = !P.output || busy;
-  $("outLink").href = `/api/projects/${P.id}/output`;
+  $("outLink").href = `/editor/api/projects/${P.id}/output`;
   renderEditedList();
 }
 
@@ -239,9 +239,9 @@ function setFrame(n) {
   if (!P || !P.frames) return;
   n = Math.max(1, Math.min(P.frames, n));
   const prevCur = cur; cur = n;
-  $("frameImg").src = `/media/${P.id}/frame/${n}?v=${editVer}`;
+  $("frameImg").src = `/editor/media/${P.id}/frame/${n}?v=${editVer}`;
   $("seek").value = n; $("frameNum").value = n;
-  $("dlFrame").href = `/api/projects/${P.id}/frame/${n}/download`;
+  $("dlFrame").href = `/editor/api/projects/${P.id}/frame/${n}/download`;
   // follow the current frame with the range inputs until the user diverges
   if (+$("fromN").value === prevCur && +$("toN").value === prevCur) {
     $("fromN").value = n; $("toN").value = n;
@@ -256,7 +256,7 @@ function renderStrip() {
   for (let n = Math.max(1, cur - R); n <= Math.min(P.frames, cur + R); n++) {
     const d = document.createElement("div");
     d.className = "th" + (n === cur ? " cur" : "") + (edited.has(n) ? " edited" : "");
-    d.innerHTML = `<img loading="lazy" src="/media/${P.id}/thumb/${n}?v=${editVer}"><span class="n">${n}</span>`;
+    d.innerHTML = `<img loading="lazy" src="/editor/media/${P.id}/thumb/${n}?v=${editVer}"><span class="n">${n}</span>`;
     d.onclick = () => setFrame(n);
     strip.append(d);
   }
@@ -326,7 +326,7 @@ $("applyBtn").onclick = async () => {
   if (!sel) return;
   err("");
   try {
-    P = await api(`/api/projects/${P.id}/edit`, {
+    P = await api(`/editor/api/projects/${P.id}/edit`, {
       method: "POST", headers: {"Content-Type": "application/json"},
       body: JSON.stringify({from: +$("fromN").value, to: +$("toN").value,
                             rect: sel, op: $("op").value, strength: +$("strength").value}),
@@ -337,7 +337,7 @@ $("applyBtn").onclick = async () => {
 
 $("revertBtn").onclick = async () => {
   err("");
-  P = await api(`/api/projects/${P.id}/revert`, {
+  P = await api(`/editor/api/projects/${P.id}/revert`, {
     method: "POST", headers: {"Content-Type": "application/json"},
     body: JSON.stringify({frame: cur}),
   });
@@ -350,7 +350,7 @@ $("replFile").onchange = async e => {
   err("");
   try {
     const fd = new FormData(); fd.append("image", f);
-    P = await api(`/api/projects/${P.id}/frame/${cur}/replace`, {method: "POST", body: fd});
+    P = await api(`/editor/api/projects/${P.id}/frame/${cur}/replace`, {method: "POST", body: fd});
     editVer++; setFrame(cur); refreshJobUI();
   } catch (er) { err("Replace failed: " + er.message); }
   finally { e.target.value = ""; }
@@ -358,11 +358,13 @@ $("replFile").onchange = async e => {
 
 $("packBtn").onclick = async () => {
   err("");
-  P = await api(`/api/projects/${P.id}/repackage`, {method: "POST"});
+  P = await api(`/editor/api/projects/${P.id}/repackage`, {method: "POST"});
   refreshJobUI();
 };
 
-showHome();
+const openParam = new URLSearchParams(location.search).get("open");
+if (openParam) openProject(openParam).catch(e => { err(e.message); showHome(); });
+else showHome();
 </script>
 </body>
 </html>

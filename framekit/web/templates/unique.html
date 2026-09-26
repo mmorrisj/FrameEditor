@@ -1,0 +1,217 @@
+{% extends "base.html" %}
+{% block main %}
+<h1>Unique frames <span>drop images in, near-duplicates move out</span></h1>
+
+<div class="card">
+  <div id="drop" style="border:2px dashed var(--edge);border-radius:10px;padding:26px;text-align:center">
+    <b>Drop images here</b> <span class="dim">or</span>
+    <label style="color:var(--accent);cursor:pointer">choose files<input type="file" id="pick" multiple accept="image/*" hidden></label>
+    <div class="row" style="justify-content:center;margin-top:10px">
+      <label>into set <select id="setSel"></select></label>
+      <input type="text" id="newSet" placeholder="new set name" class="hidden">
+    </div>
+  </div>
+  <progress id="upBar" hidden></progress>
+  <div class="dim" style="margin-top:10px">Or copy images straight into <span class="mono" id="inbox"></span>.
+    Each subfolder is a separate set; images are only compared within their own set.</div>
+  <div class="row" style="margin-top:8px">
+    <label><input type="checkbox" id="watch"> Watch the folder and remove near-duplicates automatically</label>
+    <span class="dim" id="last"></span>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Settings</h2>
+  <div class="row">
+    <label>Compare by <select id="backend"></select></label>
+    <label>Keep the <select id="prefer"></select> of each look-alike group</label>
+  </div>
+  <div class="row" style="margin-top:8px">
+    <label>Similarity cutoff</label>
+    <span class="dim">keep more</span>
+    <input type="range" id="thr" min="0.005" max="0.4" step="0.005" class="grow">
+    <span class="dim">keep fewer</span>
+    <span class="mono" id="thrVal"></span>
+  </div>
+  <div class="row" style="margin-top:8px">
+    <label>also remove near-identical images within <input type="number" id="bits" min="0" max="32"> hash bits</label>
+    <span class="grow"></span>
+    <button class="primary" id="saveBtn">Save settings</button>
+  </div>
+  <div class="dim" style="margin-top:6px" id="guide"></div>
+</div>
+
+<div class="card">
+  <h2>Sets</h2>
+  <table><thead><tr><th>Set</th><th class="num">Images</th><th></th></tr></thead><tbody id="sets"></tbody></table>
+  <progress id="bar" hidden></progress> <span id="barLbl" class="dim"></span>
+</div>
+
+<div class="card hidden" id="preview"></div>
+
+<div class="card">
+  <h2>Recent removals <span>moved to quarantine; undo puts them back and always keeps them from then on</span></h2>
+  <div id="runs"></div>
+</div>
+{% endblock %}
+{% block script %}
+<script>
+let U = null, runsSig = null;
+const thumb = p => `/media/unique?p=${encodeURIComponent(p)}`;
+const base = p => p.split(/[\\/]/).pop();
+
+async function load() {
+  U = await FK.api("/api/unique");
+  $("inbox").textContent = U.inbox;
+  $("watch").checked = U.settings.watch;
+  const l = U.last;
+  $("last").textContent = !l ? "" : l.error ? `Watcher error: ${l.error}` :
+    `Last automatic pass ${new Date(l.at * 1000).toLocaleTimeString()}: ${l.total} images, kept ${l.kept}, removed ${l.moved ?? l.removed}${l.skipped ? `, ${l.skipped} unreadable` : ""}`;
+  if (!$("backend").options.length) {
+    for (const [k, ok] of Object.entries(U.backends)) {
+      const o = new Option(k === "clip" ? `CLIP (content)${ok ? "" : ", not installed"}` : "Visual (built-in)", k);
+      o.disabled = !ok; $("backend").add(o);
+    }
+    for (const [k, t] of Object.entries(U.prefer)) $("prefer").add(new Option(t.toLowerCase(), k));
+    fillSettings(U.settings);
+  }
+  const cur = $("setSel").value;
+  $("setSel").innerHTML = "";
+  for (const s of U.sets) $("setSel").add(new Option(s.name ? s.name : "(loose images)", s.name));
+  $("setSel").add(new Option("New set…", "__new"));
+  if ([...$("setSel").options].some(o => o.value === cur)) $("setSel").value = cur;
+
+  const tb = $("sets");
+  tb.innerHTML = "";
+  for (const s of U.sets) {
+    if (!s.name && !s.count) continue;
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${esc(s.label)}${s.active ? ' <span class="tag">processing</span>' : ""}</td><td class="num">${s.count}</td>
+      <td class="row" style="justify-content:flex-end">
+        <button class="small pv">Preview</button><button class="small run">Remove near-duplicates</button>
+        <a href="/api/unique/set/zip?set=${encodeURIComponent(s.name)}">Download zip</a></td>`;
+    tr.querySelector(".pv").onclick = () => preview(s);
+    tr.querySelector(".run").onclick = () => run(s);
+    tb.append(tr);
+  }
+  if (!tb.children.length) tb.innerHTML = '<tr><td colspan="3" class="dim">The inbox is empty. Drop some images above.</td></tr>';
+  const sig = JSON.stringify(U.runs.map(r => [r.batch, r.pairs.map(p => p.state).join()]));
+  if (sig !== runsSig) { runsSig = sig; renderRuns(); }
+}
+
+const GUIDE = {
+  visual: "Built-in comparison, as a guide: frames a fraction of a second apart score about 0.02, different moments of the same scene 0.1 to 0.3, different scenes 0.7 or more. Best for keeping distinct angles.",
+  clip: "CLIP compares content, so distances are much smaller: frames a fraction of a second apart about 0.007, the same scene about 0.02, different scenes 0.16 or more. It treats different angles of the same subject as alike, so it keeps fewer images.",
+};
+function syncGuide() { $("guide").textContent = GUIDE[$("backend").value] || ""; }
+function fillSettings(s) {
+  $("backend").value = s.backend; $("prefer").value = s.prefer;
+  $("thr").value = s.threshold; $("thrVal").textContent = (+s.threshold).toFixed(3);
+  $("bits").value = s.bits;
+  syncGuide();
+}
+function current() {
+  return {backend: $("backend").value, threshold: $("thr").value, bits: $("bits").value, prefer: $("prefer").value};
+}
+$("thr").oninput = () => $("thrVal").textContent = (+$("thr").value).toFixed(3);
+$("backend").onchange = () => { $("thr").value = U.settings.thresholds[$("backend").value] ?? U.defaults[$("backend").value]; $("thr").oninput(); syncGuide(); };
+$("saveBtn").onclick = async () => {
+  try { fillSettings((await FK.api("/api/unique/settings", {json: current()})).settings); FK.toast("Settings saved"); }
+  catch (e) { FK.fail(e); }
+};
+$("watch").onchange = async () => {
+  try { await FK.api("/api/unique/settings", {json: {watch: $("watch").checked}});
+    FK.toast($("watch").checked ? "Watching the inbox" : "Stopped watching"); }
+  catch (e) { FK.fail(e); }
+};
+$("setSel").onchange = () => $("newSet").classList.toggle("hidden", $("setSel").value !== "__new");
+
+/* ---- upload ---- */
+async function upload(files) {
+  files = [...files].filter(f => f.type.startsWith("image/") || /\.(jpe?g|png|webp|bmp|tiff?)$/i.test(f.name));
+  if (!files.length) return FK.toast("No images in that drop.", true);
+  let set = $("setSel").value;
+  if (set === "__new") { set = $("newSet").value.trim(); if (!set) return FK.toast("Name the new set first.", true); }
+  $("upBar").hidden = false; $("upBar").max = files.length; $("upBar").value = 0;
+  try {
+    for (let i = 0; i < files.length; i += 50) {  // chunks keep each request small
+      const fd = new FormData(); fd.append("set", set);
+      for (const f of files.slice(i, i + 50)) fd.append("image", f);
+      await FK.api("/api/unique/upload", {method: "POST", body: fd});
+      $("upBar").value = Math.min(i + 50, files.length);
+    }
+    FK.toast(`Added ${files.length} images${$("watch").checked ? ". Near-duplicates are removed automatically in a few seconds." : "."}`);
+    $("newSet").value = ""; await load();
+    if (set) $("setSel").value = set;
+  } catch (e) { FK.fail(e); } finally { $("upBar").hidden = true; }
+}
+const drop = $("drop");
+drop.ondragover = e => { e.preventDefault(); drop.style.borderColor = "var(--accent)"; };
+drop.ondragleave = () => drop.style.borderColor = "";
+drop.ondrop = e => { e.preventDefault(); drop.style.borderColor = ""; upload(e.dataTransfer.files); };
+$("pick").onchange = e => { upload(e.target.files); e.target.value = ""; };
+
+/* ---- preview / run ---- */
+function pairTile(removed, kept, info) {
+  return `<div class="col" style="gap:2px">
+    <div style="display:flex;gap:2px"><img src="${thumb(removed)}" style="width:50%;opacity:.55" title="removed: ${esc(base(removed))}">
+      <img src="${thumb(kept)}" style="width:50%" title="kept: ${esc(base(kept))}"></div>
+    <span class="dim" style="font-size:11px">${esc(base(removed))} ≈ ${esc(base(kept))} · ${info}</span></div>`;
+}
+async function preview(s) {
+  try {
+    const j = await FK.runJob("/api/unique/run", {set: s.name, preview: true, ...current()}, $("bar"), $("barLbl"));
+    const r = j.result, box = $("preview");
+    box.classList.remove("hidden");
+    box.innerHTML = `<div class="row"><h2 class="grow">Preview: ${esc(s.label)} <span>${r.total} images, keeps ${r.kept}, removes ${r.removed}</span></h2>
+        <button class="primary" ${r.removed ? "" : "disabled"}>Remove these ${r.removed}</button><button class="close">Close</button></div>
+      <div class="dim" style="margin-bottom:8px">Each pair shows the image that would be removed (faded) next to the one it resembles.</div>
+      <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(240px,1fr))">
+        ${r.pairs.slice(0, 300).map(p => pairTile(p.path, p.kept, `distance ${p.distance}`)).join("")}</div>
+      ${r.pairs.length > 300 ? `<div class="dim">…and ${r.pairs.length - 300} more</div>` : ""}`;
+    box.querySelector(".primary").onclick = () => run(s);
+    box.querySelector(".close").onclick = () => box.classList.add("hidden");
+    box.scrollIntoView({behavior: "smooth"});
+  } catch (e) { FK.fail(e); }
+}
+async function run(s) {
+  try {
+    const j = await FK.runJob("/api/unique/run", {set: s.name, ...current()}, $("bar"), $("barLbl"));
+    const r = j.result;
+    FK.toast(`Kept ${r.kept} of ${r.total}; moved ${r.moved} near-duplicates to quarantine${Object.keys(r.failed || {}).length ? ` (${Object.keys(r.failed).length} were in use and skipped)` : ""}`);
+    $("preview").classList.add("hidden");
+    load();
+  } catch (e) { FK.fail(e); }
+}
+
+/* ---- history ---- */
+function renderRuns() {
+  const box = $("runs");
+  box.innerHTML = U.runs.length ? "" : '<div class="dim">Nothing removed yet.</div>';
+  for (const r of U.runs) {
+    const held = r.pairs.filter(p => p.state === "held").length;
+    const div = document.createElement("div");
+    div.style.cssText = "padding:8px 0;border-bottom:1px solid var(--edge)";
+    div.innerHTML = `<div class="row"><b>${esc(base(r.folder))}</b>
+        <span class="dim">${FK.when(r.created)} · ${r.total} images, kept ${r.kept}, removed ${r.pairs.length}${held < r.pairs.length ? ` (${r.pairs.length - held} restored or deleted)` : ""}</span>
+        <span class="grow"></span><button class="small show">Show</button><button class="small undo" ${held ? "" : "disabled"}>Undo</button></div>
+      <div class="grid hidden" style="grid-template-columns:repeat(auto-fill,minmax(240px,1fr));margin-top:8px"></div>`;
+    const grid = div.querySelector(".grid");
+    div.querySelector(".show").onclick = () => {
+      if (!grid.innerHTML) grid.innerHTML = r.pairs.map(p =>
+        p.state === "held" ? pairTile(p.dst, p.kept, `distance ${p.distance}`) : "").join("");
+      grid.classList.toggle("hidden");
+    };
+    div.querySelector(".undo").onclick = async () => {
+      try { const x = await FK.api(`/api/unique/runs/${r.batch}/undo`, {method: "POST"});
+        FK.toast(`Restored ${x.restored} images; they will always be kept from now on`); load(); }
+      catch (e) { FK.fail(e); }
+    };
+    box.append(div);
+  }
+}
+
+load().catch(FK.fail);
+setInterval(() => { if (!document.hidden) load().catch(() => {}); }, 5000);
+</script>
+{% endblock %}

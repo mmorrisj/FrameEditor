@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% if title %}{{ title }} · {% endif %}FrameKit</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+</head>
+<body>
+<nav class="top">
+  <span class="brand">FrameKit</span>
+  <a href="/" class="{{ 'on' if page == 'library' }}">Library</a>
+  <a href="/dupes" class="{{ 'on' if page == 'dupes' }}">Duplicates</a>
+  <a href="/groups" class="{{ 'on' if page == 'groups' }}">Groups</a>
+  <a href="/unique" class="{{ 'on' if page == 'unique' }}">Unique frames</a>
+  <a href="/editor/" class="{{ 'on' if page == 'editor' }}">Frame editor</a>
+  <span class="spacer"></span>
+  <button id="jobsBtn" class="small">Jobs <span class="badge" id="jobsBadge" hidden>0</span></button>
+</nav>
+<div id="jobs" hidden><div class="row" style="margin-bottom:6px"><b class="grow">Jobs</b>
+  <button class="small" onclick="$('jobs').hidden=true">Close</button></div><div id="jobsList"></div></div>
+<main>
+{% block main %}{% endblock %}
+</main>
+{% block script %}{% endblock %}
+</body>
+</html>

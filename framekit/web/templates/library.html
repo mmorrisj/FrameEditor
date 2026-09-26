@@ -1,0 +1,135 @@
+{% extends "base.html" %}
+{% block main %}
+<h1>Library <span id="count"></span></h1>
+
+<div class="card">
+  <div class="row">
+    <div class="grow">
+      <div class="dim">Folders scanned for videos (set in <span class="mono">framekit.json</span> or with
+        <span class="mono">python -m framekit roots add PATH</span>):</div>
+      <div id="roots" class="mono"></div>
+    </div>
+    <button class="primary" id="scanBtn">Scan folders</button>
+  </div>
+  <div class="row" style="margin-top:10px">
+    <input type="file" id="upFile" multiple accept="video/*,.mp4,.mov,.mkv,.webm,.m4v,.avi">
+    <button id="upBtn">Upload to library</button>
+    <span class="dim">Uploads land in the <b>uploads</b> folder.</span>
+  </div>
+  <progress id="bar" hidden></progress> <span id="barLbl" class="dim"></span>
+</div>
+
+<div class="card">
+  <div class="row" style="margin-bottom:8px">
+    <input type="search" id="filter" placeholder="Filter by name or folder" class="grow">
+    <span class="dim" id="selInfo">0 selected</span>
+  </div>
+  <div class="row" style="margin-bottom:10px">
+    <b>With selected:</b>
+    <select id="fMode"></select>
+    <input type="number" id="fVal" step="any" title="Mode value">
+    <select id="fFmt"><option>jpg</option><option>png</option><option>webp</option></select>
+    <button id="fBtn">Extract frames</button>
+    <span class="dim">|</span>
+    <select id="aFmt"></select>
+    <button id="aBtn">Extract audio</button>
+    <span class="dim">|</span>
+    <button id="dBtn">Find duplicates</button>
+    <button id="gBtn">Group</button>
+  </div>
+  <table>
+    <thead><tr><th><input type="checkbox" id="all"></th><th></th><th>Name</th><th class="hide-sm">Folder</th>
+      <th class="num">Length</th><th class="num hide-sm">Size</th><th class="hide-sm">Video</th><th>Audio</th></tr></thead>
+    <tbody id="rows"><tr><td colspan="8" class="dim">Loading…</td></tr></tbody>
+  </table>
+</div>
+{% endblock %}
+{% block script %}
+<script>
+let LIB = null;
+const sel = new Set();
+const MODES = {all: "Every frame", nth: "Every Nth frame", fps: "Frames per second", scene: "Scene changes", keyframes: "Keyframes only"};
+const DEF = {nth: 10, fps: 1, scene: 0.3};
+const AUD = {copy: "Audio: original stream", wav: "Audio: WAV", flac: "Audio: FLAC", mp3: "Audio: MP3"};
+for (const [k, v] of Object.entries(MODES)) $("fMode").add(new Option(v, k, false, k === "scene"));
+for (const [k, v] of Object.entries(AUD)) $("aFmt").add(new Option(v, k));
+function syncVal() {
+  const m = $("fMode").value;
+  $("fVal").hidden = !(m in DEF); $("fVal").value = DEF[m] ?? "";
+}
+$("fMode").onchange = syncVal; syncVal();
+
+async function load() {
+  LIB = await FK.api("/api/library");
+  $("roots").innerHTML = LIB.roots.map(r => `<div>${esc(r.path)}</div>`).join("");
+  render();
+}
+
+function render() {
+  const q = $("filter").value.toLowerCase();
+  const vids = LIB.videos.filter(v => !q || (v.rel + " " + v.root).toLowerCase().includes(q));
+  $("count").textContent = `· ${LIB.videos.length} videos`;
+  const tb = $("rows");
+  tb.innerHTML = vids.length ? "" : '<tr><td colspan="8" class="dim">No videos. Add a folder and scan, or upload.</td></tr>';
+  const rootName = Object.fromEntries(LIB.roots.map(r => [r.path, r.name]));
+  for (const v of vids) {
+    const tr = document.createElement("tr");
+    const i = v.info;
+    tr.innerHTML = `<td><input type="checkbox" ${sel.has(v.id) ? "checked" : ""} ${i ? "" : "disabled"}></td>
+      <td>${v.has_samples ? `<img class="thumb" loading="lazy" src="/media/sample/${v.id}/0">` : ""}</td>
+      <td>${i ? `<a href="/video/${v.id}">${esc(v.name)}</a>` : `${esc(v.name)} <span class="err">${esc(v.error || "")}</span>`}</td>
+      <td class="dim hide-sm">${esc(rootName[v.root] || v.root)}/${esc(v.rel.replace(/[^\\/]*$/, ""))}</td>
+      <td class="num">${i ? FK.dur(i.duration) : ""}</td>
+      <td class="num hide-sm">${FK.bytes(v.size)}</td>
+      <td class="dim hide-sm">${i ? `${i.width}×${i.height} ${i.fps}fps ${i.vcodec}` : ""}</td>
+      <td class="dim">${i && i.has_audio ? i.audio.map(a => a.codec).join(", ") : "none"}</td>`;
+    tr.querySelector("input").onchange = e => { e.target.checked ? sel.add(v.id) : sel.delete(v.id); selInfo(); };
+    tb.append(tr);
+  }
+  selInfo();
+}
+function selInfo() { $("selInfo").textContent = `${sel.size} selected`; }
+$("filter").oninput = render;
+$("all").onchange = e => {
+  const q = $("filter").value.toLowerCase();
+  for (const v of LIB.videos) if (v.info && (!q || (v.rel + " " + v.root).toLowerCase().includes(q)))
+    e.target.checked ? sel.add(v.id) : sel.delete(v.id);
+  render();
+};
+function need() { if (!sel.size) { FK.toast("Select some videos first.", true); return false; } return true; }
+
+$("scanBtn").onclick = async () => {
+  try {
+    const j = await FK.runJob("/api/library/scan", {}, $("bar"), $("barLbl"));
+    const r = j.result; FK.toast(`${r.files} videos found, ${r.probed} new or changed${r.errors ? `, ${r.errors} unreadable` : ""}`);
+    load();
+  } catch (e) { FK.fail(e); }
+};
+$("upBtn").onclick = async () => {
+  const files = $("upFile").files;
+  if (!files.length) return FK.toast("Choose video files first.", true);
+  const fd = new FormData(); for (const f of files) fd.append("video", f);
+  $("bar").hidden = false; $("bar").removeAttribute("value"); $("barLbl").textContent = "uploading…";
+  try { await FK.api("/api/library/upload", {method: "POST", body: fd}); FK.toast("Uploaded"); load(); }
+  catch (e) { FK.fail(e); } finally { $("bar").hidden = true; $("barLbl").textContent = ""; $("upFile").value = ""; }
+};
+$("fBtn").onclick = async () => {
+  if (!need()) return;
+  try {
+    const r = await FK.api("/api/frames/batch", {json: {ids: [...sel], mode: $("fMode").value, value: $("fVal").value, fmt: $("fFmt").value}});
+    FK.toast(`${r.jobs.length} frame extraction jobs queued. Open a video to see its frames.`);
+  } catch (e) { FK.fail(e); }
+};
+$("aBtn").onclick = async () => {
+  if (!need()) return;
+  try {
+    const j = await FK.runJob("/api/audio/batch", {ids: [...sel], fmt: $("aFmt").value}, $("bar"), $("barLbl"));
+    const n = Object.keys(j.result.failed).length;
+    FK.toast(`Audio extracted from ${j.result.done.length} videos${n ? `, ${n} failed (e.g. no audio track)` : ""}. Files are on each video's page.`);
+  } catch (e) { FK.fail(e); }
+};
+$("dBtn").onclick = () => { if (need()) { sessionStorage.setItem("fk.ids", JSON.stringify([...sel])); location.href = "/dupes?sel=1"; } };
+$("gBtn").onclick = () => { if (need()) { sessionStorage.setItem("fk.ids", JSON.stringify([...sel])); location.href = "/groups?sel=1"; } };
+load().catch(FK.fail);
+</script>
+{% endblock %}

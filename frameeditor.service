@@ -1,5 +1,5 @@
 [Unit]
-Description=FrameEditor web app (Flask, behind Caddy at frameeditor.home)
+Description=FrameKit video tools web app (Flask, behind Caddy at frameeditor.home)
 After=network-online.target
 Wants=network-online.target
 
