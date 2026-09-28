@@ -34,6 +34,17 @@
     <select id="aFmt"></select>
     <button id="aBtn">Extract audio</button>
     <span class="dim">|</span>
+    <button id="rBtn">Reverse</button>
+    <span class="dim">|</span>
+    <select id="zPreset">
+      <option value="720p">720p</option><option value="1080p">1080p</option><option value="480p">480p</option>
+      <option value="50pct">Half size</option><option value="vertical">Vertical 1080×1920</option>
+      <option value="square">Square 1080×1080</option><option value="portrait45">Portrait 4:5</option>
+      <option value="wide1080">Widescreen 1920×1080</option></select>
+    <select id="zFit" title="when the shape differs"><option value="pad">bars</option>
+      <option value="blur">blurred background</option><option value="crop">crop to fill</option></select>
+    <button id="zBtn">Resize</button>
+    <span class="dim">|</span>
     <button id="dBtn">Find duplicates</button>
     <button id="gBtn">Group</button>
   </div>
@@ -126,6 +137,20 @@ $("aBtn").onclick = async () => {
     const j = await FK.runJob("/api/audio/batch", {ids: [...sel], fmt: $("aFmt").value}, $("bar"), $("barLbl"));
     const n = Object.keys(j.result.failed).length;
     FK.toast(`Audio extracted from ${j.result.done.length} videos${n ? `, ${n} failed (e.g. no audio track)` : ""}. Files are on each video's page.`);
+  } catch (e) { FK.fail(e); }
+};
+$("rBtn").onclick = async () => {
+  if (!need()) return;
+  try {
+    const r = await FK.api("/api/reverse/batch", {json: {ids: [...sel], audio: "reverse", speed: 1}});
+    FK.toast(`${r.jobs.length} videos queued for reversing. The results appear on each video's page.`);
+  } catch (e) { FK.fail(e); }
+};
+$("zBtn").onclick = async () => {
+  if (!need()) return;
+  try {
+    const r = await FK.api("/api/resize/batch", {json: {ids: [...sel], preset: $("zPreset").value, fit: $("zFit").value}});
+    FK.toast(`${r.jobs.length} videos queued for resizing. The results appear on each video's page.`);
   } catch (e) { FK.fail(e); }
 };
 $("dBtn").onclick = () => { if (need()) { sessionStorage.setItem("fk.ids", JSON.stringify([...sel])); location.href = "/dupes?sel=1"; } };

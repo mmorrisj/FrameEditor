@@ -49,7 +49,8 @@ def probe(path: str) -> dict:
     proc = subprocess.run(
         ["ffprobe", "-v", "error", "-show_entries",
          "stream=index,codec_type,codec_name,width,height,avg_frame_rate,r_frame_rate,"
-         "channels,sample_rate,duration:stream_disposition=attached_pic",
+         "channels,sample_rate,duration,sample_aspect_ratio:stream_disposition=attached_pic"
+         ":stream_side_data=rotation",
          "-show_entries", "format=duration,bit_rate,format_name", "-of", "json", path],
         capture_output=True, text=True, **_POPEN_KW)
     if proc.returncode != 0:
@@ -76,6 +77,10 @@ def probe(path: str) -> dict:
         "duration": duration,
         "bitrate": int(fmt.get("bit_rate") or 0),
         "vcodec": vid.get("codec_name"),
+        # pixel shape (non-1 = anamorphic) and display rotation (phones store portrait sideways)
+        "sar": _frac((vid.get("sample_aspect_ratio") or "1:1").replace(":", "/")) or 1.0,
+        "rotation": int(next((float(sd["rotation"]) for sd in vid.get("side_data_list") or []
+                              if "rotation" in sd), 0)) % 360,
         "container": fmt.get("format_name"),
         "has_audio": bool(audio), "audio": audio,
     }

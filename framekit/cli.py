@@ -10,7 +10,7 @@ import json
 import os
 import sys
 
-from . import config, fileops, jobs, library
+from . import config, fileops, jobs, library, media
 
 
 def _p(*a, **k):
@@ -244,6 +244,37 @@ def cmd_unique(a):
         _p(f"nothing to do: {unique.inbox()} has no images")
 
 
+def cmd_reverse(a):
+    from .tools import reverse
+    for src in _video_files(a.targets):
+        name = reverse.output_name(src, a.audio, a.speed, a.boomerang)
+        out = os.path.join(a.out or os.path.dirname(os.path.abspath(src)), name)
+        if os.path.abspath(out) == os.path.abspath(src):
+            sys.exit("refusing to overwrite the source video")
+        r = jobs.run_sync(reverse.reverse, src, out, audio=a.audio, speed=a.speed,
+                          boomerang=a.boomerang, label=os.path.basename(src))
+        _p(f"ok  {out}  ({r['duration']:.1f}s)")
+
+
+def cmd_resize(a):
+    from .tools import resize
+    if a.size:
+        try:
+            a.width, a.height = (int(x) for x in a.size.lower().split("x"))
+        except ValueError:
+            sys.exit("--size must look like 1080x1920")
+    opts = {"preset": a.preset, "width": a.width, "height": a.height, "percent": a.percent,
+            "fit": a.fit, "anchor": a.anchor, "quality": a.quality}
+    for src in _video_files(a.targets):
+        info = media.probe(src)
+        out = os.path.join(a.out or os.path.dirname(os.path.abspath(src)),
+                           resize.output_name(src, info, **{k: v for k, v in opts.items() if k != "quality"}))
+        if os.path.abspath(out) == os.path.abspath(src):
+            sys.exit("refusing to overwrite the source video")
+        r = jobs.run_sync(resize.resize, src, out, info=info, label=os.path.basename(src), **opts)
+        _p(f"ok  {r['from'][0]}x{r['from'][1]} -> {r['to'][0]}x{r['to'][1]}  {out}")
+
+
 def cmd_serve(a):
     if a.log:  # background runs (pythonw) have no console: send all output to a file
         import logging
@@ -302,6 +333,32 @@ def main(argv=None):
     s.add_argument("--track", type=int, default=1, help="audio track number (default 1)")
     s.add_argument("--out", help="output folder (default: next to each video)")
     s.set_defaults(fn=cmd_audio)
+
+    s = sub.add_parser("reverse", help="make rewound (reversed) copies of videos")
+    s.add_argument("targets", nargs="+", help="video files or folders")
+    s.add_argument("--audio", choices=["reverse", "keep", "none"], default="reverse",
+                   help="reverse the audio too (default), keep it playing forwards, or drop it")
+    s.add_argument("--speed", type=float, default=1.0, help="e.g. 2 for a fast rewind")
+    s.add_argument("--boomerang", action="store_true", help="play forwards, then rewind")
+    s.add_argument("--out", help="output folder (default: next to each video)")
+    s.set_defaults(fn=cmd_reverse)
+
+    s = sub.add_parser("resize", help="resize videos without stretching the picture")
+    s.add_argument("targets", nargs="+", help="video files or folders")
+    g = s.add_mutually_exclusive_group(required=True)
+    g.add_argument("--preset", choices=["50pct", "2160p", "1080p", "720p", "480p", "vertical", "square",
+                                        "portrait45", "wide1080"])
+    g.add_argument("--height", type=int, help="new height; width follows the video's shape")
+    g.add_argument("--width", type=int, help="new width; height follows the video's shape")
+    g.add_argument("--percent", type=float, help="scale both sides, e.g. 50")
+    g.add_argument("--size", help="exact frame size such as 1080x1920 (see --fit)")
+    s.add_argument("--fit", choices=["pad", "blur", "crop", "inside"], default="pad",
+                   help="for an exact size of a different shape: bars, blurred background, crop, or fit inside")
+    s.add_argument("--anchor", choices=["center", "top", "bottom", "left", "right"], default="center",
+                   help="which part to keep with --fit crop")
+    s.add_argument("--quality", choices=["high", "balanced", "small"], default="high")
+    s.add_argument("--out", help="output folder (default: next to each video)")
+    s.set_defaults(fn=cmd_resize)
 
     s = sub.add_parser("dupes", help="find duplicate videos (dry run unless --apply)")
     s.add_argument("dirs", nargs="*", help="folders to check (default: library folders)")

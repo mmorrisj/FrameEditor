@@ -6,6 +6,8 @@ works on its own, from the web app or the command line:
 | Tool | What it does |
 | --- | --- |
 | **Frames** | Break a video into images: every frame, every Nth frame, N per second, scene changes only, or keyframes only. Every frame's source timestamp is recorded. |
+| **Resize** | Scale videos without ever stretching the picture: by percent, to a height or width, or to an exact size. For a different shape, such as vertical or square, choose bars, a blurred background, or crop to fill, and preview a frame first. Non-square pixels and phone rotation are corrected, and audio is copied untouched. |
+| **Reverse** | Make a rewound copy that plays backwards, optionally faster or as a boomerang (forwards, then rewind). Audio can be reversed, kept playing forwards, or dropped. Long and high-resolution videos are reversed in chunks, so memory use stays flat. |
 | **Audio** | Pull the audio track out untouched (AAC stays AAC in an .m4a), or convert to WAV, FLAC or MP3. |
 | **Duplicates** | Find exact copies, re-encodes (other resolution, bitrate or container) and trimmed copies. Extras go to a quarantine folder that can be undone. |
 | **Groups** | Cluster videos by how similar their sampled frames look. Adjust the cutoff with a slider, drag videos between groups, export, or file them into folders. |
@@ -102,6 +104,8 @@ Folder arguments are indexed on the fly, so none of these need library setup.
 ```bash
 python -m framekit frames clip.mp4 --mode scene --value 0.3     # or all | nth | fps | keyframes
 python -m framekit audio ~/Videos --format copy                 # every video in a folder
+python -m framekit resize D:/Videos --preset 720p              # or --size 1080x1920 --fit blur
+python -m framekit reverse clip.mp4 --speed 2                   # or --boomerang, --audio keep|none
 python -m framekit dupes ~/Videos --deep                        # dry run, prints what it found
 python -m framekit dupes ~/Videos --apply                       # quarantine every extra
 python -m framekit quarantine list | undo BATCH | purge BATCH --yes
@@ -154,7 +158,7 @@ working. New ones go to `work/editor/`.
   - `samples.py`: cached per-video fingerprints.
   - `features.py`: perceptual hash and embeddings.
   - `fileops.py`: logged moves, quarantine, undo and purge.
-- `framekit/tools/` has one module per tool: `frames`, `audio`, `dupes`,
+- `framekit/tools/` has one module per tool: `frames`, `audio`, `resize`, `reverse`, `dupes`,
   `grouping`, `unique`, `analysis`, and `editor/`.
 - `start-framekit.bat` and `scripts/` hold the Windows launcher and the
   start-at-sign-in installer.

@@ -4,7 +4,7 @@
 
 <div class="card">
   <div class="row" style="align-items:flex-start">
-    <video id="player" controls preload="metadata" style="max-width:520px;width:100%;border-radius:6px;background:#000"
+    <video id="player" controls preload="metadata" style="max-width:520px;width:100%;max-height:420px;border-radius:6px;background:#000"
            src="/media/video/{{ vid }}"></video>
     <div class="col grow">
       <div id="meta" class="dim"></div>
@@ -36,6 +36,48 @@
 </div>
 
 <div class="card">
+  <h2>Resize <span id="shown"></span></h2>
+  <div class="row">
+    <select id="zPreset"></select>
+    <span id="zCustom" class="row hidden">
+      <label>width <input type="number" id="zW" step="2" min="16"></label>
+      <label>height <input type="number" id="zH" step="2" min="16"></label>
+    </span>
+    <label id="zFitL">when the shape differs <select id="zFit"></select></label>
+    <label id="zAnchorL" class="hidden">keep the <select id="zAnchor">
+      <option value="center">center</option><option value="top">top</option><option value="bottom">bottom</option>
+      <option value="left">left</option><option value="right">right</option></select></label>
+  </div>
+  <div class="row" style="margin-top:8px">
+    <label>quality <select id="zQ"><option value="high">High</option><option value="balanced">Balanced</option>
+      <option value="small">Smaller file</option></select></label>
+    <label><input type="checkbox" id="zLib"> also add the result to the library</label>
+    <button id="zPrev">Preview</button>
+    <button class="primary" id="zBtn">Resize</button>
+  </div>
+  <div class="dim" style="margin-top:6px">The picture is never stretched. Sizes that keep the video's shape just scale it.
+    A different shape, such as vertical or square, adds bars, a blurred background, or crops to fill.
+    Audio is copied untouched.</div>
+  <progress id="zBar" hidden></progress> <span id="zLbl" class="dim"></span>
+  <img id="zImg" class="hidden" style="max-height:360px;max-width:100%;margin-top:10px;border:1px solid var(--edge);border-radius:4px">
+  <div id="zOut" style="margin-top:10px"></div>
+</div>
+
+<div class="card">
+  <h2>Reverse</h2>
+  <div class="row">
+    <select id="rMode"><option value="">Rewind (play backwards)</option><option value="1">Boomerang (forwards, then rewind)</option></select>
+    <label>audio <select id="rAudio"></select></label>
+    <label>speed <select id="rSpeed"><option value="1">1×</option><option value="1.5">1.5×</option>
+      <option value="2">2×</option><option value="4">4×</option><option value="8">8×</option></select></label>
+    <label><input type="checkbox" id="rLib"> also add the result to the library</label>
+    <button class="primary" id="rBtn">Reverse</button>
+  </div>
+  <progress id="rBar" hidden></progress> <span id="rLbl" class="dim"></span>
+  <div id="rOut" style="margin-top:10px"></div>
+</div>
+
+<div class="card">
   <h2>Audio</h2>
   <div class="row">
     <select id="aFmt"></select>
@@ -64,12 +106,17 @@ async function load() {
   if (!$("mode").options.length) {
     for (const [k, t] of Object.entries(D.modes)) $("mode").add(new Option(t, k, false, k === "scene"));
     for (const [k, t] of Object.entries(D.audio_formats)) $("aFmt").add(new Option(t, k));
+    for (const [k, t] of Object.entries(D.resize_presets)) $("zPreset").add(new Option(t, k, false, k === "720p"));
+    $("zPreset").add(new Option("Custom size…", "custom"));
+    for (const [k, t] of Object.entries(D.resize_fits)) $("zFit").add(new Option(t, k, false, k === "pad"));
+    syncResize();
+    for (const [k, t] of Object.entries(D.reverse_audio)) $("rAudio").add(new Option(t, k, false, k === "reverse"));
     i.audio.forEach((a, n) => $("aTrack").add(new Option(`Track ${n + 1}: ${a.codec}, ${a.channels ?? "?"} ch`, n)));
     $("aTrack").hidden = i.audio.length < 2;
     syncMode();
   }
   $("meta").innerHTML = `<div class="mono">${esc(v.path)}</div>
-    <div>${i.width}×${i.height} · ${i.fps} fps · ${FK.dur(i.duration)} · ${i.vcodec} · ${FK.bytes(v.size)} · ${Math.round(i.bitrate / 1000)} kb/s</div>
+    <div>${D.shown[0]}×${D.shown[1]}${D.shown[0] !== i.width || D.shown[1] !== i.height ? ` (stored as ${i.width}×${i.height})` : ""} · ${i.fps} fps · ${FK.dur(i.duration)} · ${i.vcodec} · ${FK.bytes(v.size)} · ${Math.round(i.bitrate / 1000)} kb/s</div>
     <div>Audio: ${i.audio.length ? i.audio.map(a => `${a.codec} ${a.channels ?? ""}ch ${a.sample_rate ?? ""}Hz`).join("; ") : "none"}</div>`;
   $("aBtn").disabled = !i.audio.length;
   if (D.samples) showStrip(D.samples);
@@ -90,6 +137,22 @@ async function load() {
     };
     tb.append(tr);
   }
+  const ro = $("rOut");
+  ro.innerHTML = "";
+  for (const r of D.reversed) {
+    const div = document.createElement("div");
+    div.className = "row"; div.style.marginBottom = "8px";
+    const url = `/api/video/${VID}/reversed/${encodeURIComponent(r.file)}`;
+    div.innerHTML = `<video src="${url}" controls preload="metadata" style="width:260px;border-radius:4px;background:#000"></video>
+      <div class="col"><b>${esc(r.file)}</b><span class="dim">${FK.bytes(r.size)} · ${FK.when(r.created)}</span>
+        <div class="row"><a href="${url}?dl=1">Download</a><button class="small danger">Delete</button></div></div>`;
+    div.querySelector("button").onclick = async () => { await FK.api(url, {method: "DELETE"}); load(); };
+    ro.append(div);
+  }
+  $("rAudio").disabled = !i.audio.length;
+  $("shown").textContent = `currently ${D.shown[0]}×${D.shown[1]}`;
+  outputs("zOut", D.resized, "resized");
+
   const at = $("afiles");
   at.innerHTML = D.audio.length ? "" : '<tr><td class="dim">No audio extracted yet.</td></tr>';
   for (const a of D.audio) {
@@ -133,6 +196,58 @@ $("aBtn").onclick = async () => {
   try {
     await FK.runJob(`/api/video/${VID}/audio`, {fmt: $("aFmt").value, stream: $("aTrack").value || 0}, $("aBar"), $("aLbl"));
     FK.toast("Audio extracted"); load();
+  } catch (e) { FK.fail(e); }
+};
+/* ---- resize ---- */
+const BOX = {vertical: 1, square: 1, portrait45: 1, wide1080: 1};
+function resizeBody() {
+  const p = $("zPreset").value;
+  return p === "custom"
+    ? {width: $("zW").value, height: $("zH").value, fit: $("zFit").value, anchor: $("zAnchor").value, quality: $("zQ").value}
+    : {preset: p, fit: $("zFit").value, anchor: $("zAnchor").value, quality: $("zQ").value};
+}
+function syncResize() {
+  const p = $("zPreset").value, custom = p === "custom";
+  $("zCustom").classList.toggle("hidden", !custom);
+  const box = BOX[p] || (custom && $("zW").value && $("zH").value);
+  $("zFitL").classList.toggle("hidden", !box);
+  $("zAnchorL").classList.toggle("hidden", !box || $("zFit").value !== "crop");
+}
+["zPreset", "zFit", "zW", "zH"].forEach(id => $(id).addEventListener("input", syncResize));
+$("zPrev").onclick = async () => {
+  try {
+    const r = await fetch(`/api/video/${VID}/resize/preview`, {method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(resizeBody())});
+    if (!r.ok) throw new Error((await r.json()).error);
+    $("zImg").src = URL.createObjectURL(await r.blob()); $("zImg").classList.remove("hidden");
+  } catch (e) { FK.fail(e); }
+};
+$("zBtn").onclick = async () => {
+  try {
+    const j = await FK.runJob(`/api/video/${VID}/resize`, {...resizeBody(), library: $("zLib").checked}, $("zBar"), $("zLbl"));
+    FK.toast(`Resized to ${j.result.to[0]}×${j.result.to[1]}${j.result.library_id ? ", and added to the library" : ""}`); load();
+  } catch (e) { FK.fail(e); }
+};
+function outputs(box, list, kind) {
+  const el = $(box);
+  el.innerHTML = "";
+  for (const r of list) {
+    const div = document.createElement("div");
+    div.className = "row"; div.style.marginBottom = "8px";
+    const url = `/api/video/${VID}/${kind}/${encodeURIComponent(r.file)}`;
+    div.innerHTML = `<video src="${url}" controls preload="metadata" style="width:260px;max-height:260px;border-radius:4px;background:#000"></video>
+      <div class="col"><b>${esc(r.file)}</b><span class="dim">${FK.bytes(r.size)} · ${FK.when(r.created)}</span>
+        <div class="row"><a href="${url}?dl=1">Download</a><button class="small danger">Delete</button></div></div>`;
+    div.querySelector("button").onclick = async () => { await FK.api(url, {method: "DELETE"}); load(); };
+    el.append(div);
+  }
+}
+
+$("rBtn").onclick = async () => {
+  try {
+    const j = await FK.runJob(`/api/video/${VID}/reverse`, {boomerang: !!$("rMode").value, audio: $("rAudio").value,
+      speed: $("rSpeed").value, library: $("rLib").checked}, $("rBar"), $("rLbl"));
+    FK.toast(`Reversed video ready (${FK.dur(j.result.duration)})${j.result.library_id ? ", and added to the library" : ""}`); load();
   } catch (e) { FK.fail(e); }
 };
 $("sampBtn").onclick = async () => {
