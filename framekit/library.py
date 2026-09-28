@@ -63,7 +63,8 @@ def scan(job=None, roots: list[dict] | None = None) -> dict:
         known = {row["id"]: row for row in c.execute("SELECT id, size, mtime, info FROM videos")}
     todo = [vid for vid, (_, _, st) in found.items()
             if vid not in known or known[vid]["size"] != st.st_size
-            or known[vid]["mtime"] != st.st_mtime or not known[vid]["info"]]
+            or known[vid]["mtime"] != st.st_mtime or not known[vid]["info"]
+            or '"sar"' not in known[vid]["info"]]  # indexed before pixel shape was recorded
 
     def probe_one(vid):
         _, p, _ = found[vid]

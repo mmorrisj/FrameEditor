@@ -7,8 +7,8 @@ import re
 from flask import Blueprint, Response, abort, jsonify, render_template, request, send_file
 from werkzeug.utils import secure_filename
 
-from .. import config, features, fileops, jobs, library, samples
-from ..tools import analysis, audio, dupes, frames, grouping, unique
+from .. import config, features, fileops, jobs, library, media, samples
+from ..tools import analysis, audio, dupes, frames, grouping, resize, reverse, unique
 
 bp = Blueprint("suite", __name__)
 
@@ -130,6 +130,9 @@ def api_video(vid):
     n = len(s["paths"]) if s else (
         len([f for f in os.listdir(library.work_dir(vid, "samples"))]) if has else 0)
     return jsonify(video=v, samples=n, runs=frames.list_runs(vid), audio=audio.list_outputs(vid),
+                   reversed=reverse.list_outputs(vid), reverse_audio=reverse.AUDIO,
+                   resized=resize.list_outputs(vid), shown=resize.display_size(v["info"]),
+                   resize_presets={k: p[0] for k, p in resize.PRESETS.items()}, resize_fits=resize.FITS,
                    modes=frames.MODES, defaults=frames.DEFAULT_VALUES, audio_formats=audio.FORMATS,
                    active=jobs.active_for(vid))
 
@@ -549,3 +552,108 @@ def media_unique():
         return send_file(unique.thumb(p), max_age=3600)
     except ValueError:
         abort(403)
+
+
+# --- reverse ----------------------------------------------------------------------------------
+
+def _reverse_opts(d: dict) -> dict:
+    a = d.get("audio", "reverse")
+    if a not in reverse.AUDIO:
+        abort(400, "unknown audio option")
+    speed = _num(d, "speed") or 1.0
+    if not 0.25 <= speed <= 16:
+        abort(400, "speed must be between 0.25 and 16")
+    return {"audio": a, "speed": speed, "boomerang": bool(d.get("boomerang")),
+            "to_library": bool(d.get("library"))}
+
+
+@bp.route("/api/video/<vid>/reverse", methods=["POST"])
+def api_reverse(vid):
+    v = _vid(vid)
+    o = _reverse_opts(_body())
+    kind = "Boomerang" if o["boomerang"] else "Reverse"
+    return _job(jobs.submit("reverse", f"{kind}: {v['name']}", reverse.reverse_video, vid, ref=vid, **o))
+
+
+@bp.route("/api/reverse/batch", methods=["POST"])
+def api_reverse_batch():
+    d = _body()
+    o = _reverse_opts(d)
+    out = []
+    for vid in d.get("ids", []):
+        v = _vid(vid)
+        out.append(jobs.submit("reverse", f"Reverse: {v['name']}", reverse.reverse_video, vid,
+                               ref=vid, **o).id)
+    return jsonify(jobs=out)
+
+
+@bp.route("/api/video/<vid>/reversed/<name>", methods=["GET", "DELETE"])
+def api_reversed_file(vid, name):
+    _vid(vid)
+    if not _FILE.match(name) or name.startswith("."):
+        abort(400)
+    p = os.path.join(reverse.out_dir(vid), name)
+    if not os.path.isfile(p):
+        abort(404)
+    if request.method == "DELETE":
+        os.remove(p)
+        return jsonify(ok=True)
+    return send_file(p, conditional=True, as_attachment=request.args.get("dl") == "1", download_name=name)
+
+
+# --- resize -------------------------------------------------------------------------------------
+
+def _resize_opts(d: dict) -> dict:
+    o = {"preset": d.get("preset") or None, "width": _num(d, "width", int), "height": _num(d, "height", int),
+         "percent": _num(d, "percent"), "fit": d.get("fit") or "pad", "anchor": d.get("anchor") or "center",
+         "quality": d.get("quality") or "high"}
+    if o["preset"]:
+        o["width"] = o["height"] = o["percent"] = None
+    resize.resolve(o["preset"], o["width"], o["height"], o["percent"])  # validate now, not mid-job
+    if o["fit"] not in resize.FITS or o["anchor"] not in resize.ANCHORS or o["quality"] not in resize.QUALITY:
+        abort(400, "bad fit, anchor or quality")
+    return o
+
+
+@bp.route("/api/video/<vid>/resize", methods=["POST"])
+def api_resize(vid):
+    v = _vid(vid)
+    d = _body()
+    o = _resize_opts(d)
+    return _job(jobs.submit("resize", f"Resize: {v['name']}", resize.resize_video, vid,
+                            to_library=bool(d.get("library")), ref=vid, **o))
+
+
+@bp.route("/api/resize/batch", methods=["POST"])
+def api_resize_batch():
+    d = _body()
+    o = _resize_opts(d)
+    out = []
+    for vid in d.get("ids", []):
+        v = _vid(vid)
+        out.append(jobs.submit("resize", f"Resize: {v['name']}", resize.resize_video, vid,
+                               to_library=bool(d.get("library")), ref=vid, **o).id)
+    return jsonify(jobs=out)
+
+
+@bp.route("/api/video/<vid>/resize/preview", methods=["POST"])
+def api_resize_preview(vid):
+    v = _vid(vid)
+    o = _resize_opts(_body())
+    o.pop("quality")
+    png = resize.preview(v["path"], media.probe(v["path"]), **o)
+    return Response(png, mimetype="image/png", headers={"Cache-Control": "no-store"})
+
+
+@bp.route("/api/video/<vid>/resized/<name>", methods=["GET", "DELETE"])
+def api_resized_file(vid, name):
+    _vid(vid)
+    if not _FILE.match(name) or name.startswith("."):
+        abort(400)
+    p = os.path.join(resize.out_dir(vid), name)
+    if not os.path.isfile(p):
+        abort(404)
+    if request.method == "DELETE":
+        os.remove(p)
+        return jsonify(ok=True)
+    return send_file(p, conditional=True, as_attachment=request.args.get("dl") == "1", download_name=name)
