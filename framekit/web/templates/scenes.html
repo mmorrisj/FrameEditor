@@ -1,0 +1,190 @@
+{% extends "base.html" %}
+{% block main %}
+<h1><a href="/">Library</a> / <a href="/video/{{ vid }}">{{ title }}</a> / scenes</h1>
+
+<div class="card">
+  <div class="row" style="align-items:flex-start">
+    <video id="player" controls preload="metadata" src="/media/video/{{ vid }}"
+           style="max-width:560px;width:100%;max-height:360px;border-radius:6px;background:#000"></video>
+    <div class="col grow">
+      <div id="notYet" class="col hidden">
+        <div>This video hasn't been scanned for scene changes yet.</div>
+        <div><button class="primary" id="detectBtn">Find scenes</button></div>
+      </div>
+      <div id="controls" class="col hidden">
+        <div class="row">
+          <label>Sensitivity</label>
+          <span class="dim">more cuts</span>
+          <input type="range" id="thr" min="0.05" max="0.8" step="0.01" class="grow" style="direction:ltr">
+          <span class="dim">fewer cuts</span>
+          <span class="mono" id="thrVal"></span>
+        </div>
+        <div class="row">
+          <label>ignore scenes shorter than <input type="number" id="minLen" min="0" max="60" step="0.1"> seconds</label>
+        </div>
+        <div class="row">
+          <button id="addCut">Add a cut at the player's position</button>
+          <button id="resetBtn" class="small">Undo manual edits</button>
+        </div>
+        <div id="stats" class="dim"></div>
+      </div>
+      <progress id="bar" hidden></progress> <span id="barLbl" class="dim"></span>
+    </div>
+  </div>
+  <div id="timeline" style="display:flex;height:22px;margin-top:12px;border-radius:4px;overflow:hidden;cursor:pointer"></div>
+</div>
+
+<div class="card hidden" id="exportCard">
+  <div class="row">
+    <b>Export</b>
+    <label><input type="radio" name="mode" value="exact" checked> Exact cuts (re-encodes)</label>
+    <label><input type="radio" name="mode" value="fast"> Fast (no re-encode; cuts move to the next keyframe)</label>
+    <label><input type="checkbox" id="toLib"> also add the clips to the library</label>
+    <span class="grow"></span>
+    <button class="small" id="allBtn">Select all</button><button class="small" id="noneBtn">Select none</button>
+    <button class="primary" id="exportBtn">Export</button>
+  </div>
+  <div id="exports" style="margin-top:10px"></div>
+</div>
+
+<div class="card hidden" id="scenesCard">
+  <div class="grid" id="grid" style="grid-template-columns:repeat(auto-fill,minmax(200px,1fr))"></div>
+</div>
+{% endblock %}
+{% block script %}
+<script>
+const VID = "{{ vid }}", base = `/api/video/${VID}/scenes`;
+let C = null, EX = [], stopAt = null;
+const picked = new Set();
+const color = n => `hsl(${(n * 137.5) % 360} 55% 45%)`;
+const fmt = t => { const m = Math.floor(t / 60), s = t - m * 60; return `${m}:${s.toFixed(2).padStart(5, "0")}`; };
+
+async function load() {
+  const d = await FK.api(base);
+  EX = d.exports;
+  render(d.cuts, true);
+  renderExports();
+  if (d.active.length) FK.waitJob(d.active[0].id).then(load, FK.fail);
+}
+
+function render(c, fresh) {
+  const firstTime = !C;
+  C = c;
+  $("notYet").classList.toggle("hidden", c.detected);
+  $("controls").classList.toggle("hidden", !c.detected);
+  $("exportCard").classList.toggle("hidden", !c.detected);
+  $("scenesCard").classList.toggle("hidden", !c.detected);
+  if (!c.detected) return;
+  if (fresh || firstTime) {
+    $("thr").value = c.threshold; $("thrVal").textContent = (+c.threshold).toFixed(2);
+    $("minLen").value = c.min_len;
+  }
+  if (firstTime || picked.size === 0 || [...picked].some(n => n > c.scenes.length)) {
+    picked.clear(); c.scenes.forEach(s => picked.add(s.n));
+  }
+  const manual = c.scenes.filter(s => s.manual).length;
+  $("stats").textContent = `${c.scenes.length} scenes${manual ? `, ${manual} cut${manual > 1 ? "s" : ""} added by hand` : ""}. ` +
+    `Click a scene to play it; tick the ones to export.`;
+
+  const tl = $("timeline");
+  tl.innerHTML = "";
+  for (const s of c.scenes) {
+    const seg = document.createElement("div");
+    seg.style.cssText = `flex:${s.length} 0 0;background:${color(s.n)};border-right:1px solid var(--bg);min-width:2px`;
+    seg.title = `Scene ${s.n}: ${fmt(s.start)} to ${fmt(s.end)}`;
+    seg.onclick = () => play(s);
+    tl.append(seg);
+  }
+
+  const g = $("grid");
+  g.innerHTML = "";
+  for (const s of c.scenes) {
+    const d = document.createElement("div");
+    d.className = "tile";
+    d.style.borderColor = color(s.n);
+    const thumbT = Math.round((s.start + s.length / 2) * 1000);  // middle frame: most representative
+    d.innerHTML = `<img loading="lazy" src="/media/scene/${VID}/${thumbT}">
+      <span class="cl" style="background:${color(s.n)};color:#fff">${s.n}</span>
+      <div class="cap"><span>${fmt(s.start)} to ${fmt(s.end)}</span><span>${s.length.toFixed(1)}s${s.manual ? " · manual cut" : ""}</span></div>`;
+    const bar = document.createElement("div");
+    bar.className = "row";
+    bar.style.cssText = "position:absolute;top:3px;right:3px;gap:4px";
+    bar.innerHTML = `<input type="checkbox" ${picked.has(s.n) ? "checked" : ""} title="export this scene">` +
+      (s.n > 1 ? `<button class="small" title="join this scene onto the one before it">Merge</button>` : "");
+    bar.querySelector("input").onclick = e => { e.stopPropagation(); e.target.checked ? picked.add(s.n) : picked.delete(s.n); };
+    const mb = bar.querySelector("button");
+    if (mb) mb.onclick = e => { e.stopPropagation(); edit({action: "remove", t: s.start}); };
+    d.append(bar);
+    d.onclick = () => play(s);
+    g.append(d);
+  }
+}
+
+function play(s) {
+  const p = $("player");
+  p.currentTime = s.start + 0.01;
+  stopAt = s.end;
+  p.play();
+}
+$("player").ontimeupdate = () => {
+  if (stopAt != null && $("player").currentTime >= stopAt) { $("player").pause(); stopAt = null; }
+};
+$("player").onseeking = () => { if (!$("player").paused) return; stopAt = null; };
+
+async function edit(body) {
+  try { render(await FK.api(`${base}/cut`, {json: body})); } catch (e) { FK.fail(e); }
+}
+let tTimer = null;
+function settings() {
+  clearTimeout(tTimer);
+  tTimer = setTimeout(async () => {
+    try { render(await FK.api(`${base}/settings`, {json: {threshold: $("thr").value, min_len: $("minLen").value}})); }
+    catch (e) { FK.fail(e); }
+  }, 200);
+}
+$("thr").oninput = () => { $("thrVal").textContent = (+$("thr").value).toFixed(2); settings(); };
+$("minLen").onchange = settings;
+$("addCut").onclick = () => edit({action: "add", t: $("player").currentTime});
+$("resetBtn").onclick = () => edit({action: "reset"});
+$("allBtn").onclick = () => { C.scenes.forEach(s => picked.add(s.n)); render(C); };
+$("noneBtn").onclick = () => { picked.clear(); render(C); };
+
+$("detectBtn").onclick = async () => {
+  try { await FK.runJob(`${base}/detect`, {}, $("bar"), $("barLbl")); load(); } catch (e) { FK.fail(e); }
+};
+$("exportBtn").onclick = async () => {
+  if (!picked.size) return FK.toast("Tick at least one scene.", true);
+  const mode = document.querySelector("input[name=mode]:checked").value;
+  const all = picked.size === C.scenes.length;
+  try {
+    const j = await FK.runJob(`${base}/export`, {mode, only: all ? null : [...picked], library: $("toLib").checked},
+                              $("bar"), $("barLbl"));
+    FK.toast(`Exported ${j.result.clips} clips${j.result.added ? ` and added them to the library` : ""}`);
+    load();
+  } catch (e) { FK.fail(e); }
+};
+
+function renderExports() {
+  const box = $("exports");
+  box.innerHTML = EX.length ? "" : '<div class="dim">No exports yet.</div>';
+  for (const x of EX) {
+    const d = document.createElement("div");
+    d.style.cssText = "padding:6px 0;border-top:1px solid var(--edge)";
+    const size = x.clips.reduce((a, c) => a + c.size, 0);
+    d.innerHTML = `<div class="row"><span>${FK.when(x.created)}</span>
+        <span class="dim">${x.clips.length} clips · ${x.mode === "exact" ? "exact cuts" : "fast cuts"} · ${FK.bytes(size)}</span>
+        <span class="grow"></span><a href="${base}/exports/${x.run}/zip">Download zip</a>
+        <button class="small show">Clips</button><button class="small danger del">Delete</button></div>
+      <div class="dim hidden list" style="margin-top:4px">${x.clips.map(c =>
+        `<a href="${base}/exports/${x.run}/${encodeURIComponent(c.file)}" target="_blank">${esc(c.file)}</a> ${fmt(c.start)} to ${fmt(c.end)}`).join("<br>")}</div>`;
+    d.querySelector(".show").onclick = () => d.querySelector(".list").classList.toggle("hidden");
+    d.querySelector(".del").onclick = async () => {
+      if (!confirm("Delete these exported clips?")) return;
+      await FK.api(`${base}/exports/${x.run}`, {method: "DELETE"}); load();
+    };
+    box.append(d);
+  }
+}
+load().catch(FK.fail);
+</script>
+{% endblock %}

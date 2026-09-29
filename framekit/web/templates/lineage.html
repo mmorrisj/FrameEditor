@@ -1,0 +1,474 @@
+{% extends "base.html" %}
+{% block main %}
+<style>
+  .ln-layout { display: grid; grid-template-columns: 280px minmax(0, 1fr); gap: 14px; align-items: start; }
+  @media (max-width: 900px) { .ln-layout { grid-template-columns: minmax(0, 1fr); } #chainList { max-height: 260px; } }
+  #chainList { max-height: calc(100vh - 200px); overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
+  .ln-ch { display: flex; gap: 8px; align-items: center; padding: 5px; border-radius: 6px; cursor: pointer; border: 1px solid transparent; }
+  .ln-ch:hover { background: var(--panel2); }
+  .ln-ch.on { background: var(--panel2); border-color: var(--accent); }
+  .ln-ch img { width: 46px; height: 46px; object-fit: cover; border-radius: 4px; flex: none; background: #000; }
+  .ln-ch .t { min-width: 0; }
+  .ln-ch .t div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ln-folder { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 4px 0; border-top: 1px solid var(--edge); }
+  .ln-folder .p { flex: 1; min-width: 200px; overflow-wrap: anywhere; }
+
+  /* player */
+  .ln-stage { position: relative; background: #000; border-radius: 8px; overflow: hidden; width: 100%; max-height: 62vh; }
+  .ln-stage video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+  .ln-stage video.off { visibility: hidden; }
+  .ln-stage .cap { position: absolute; left: 8px; top: 8px; background: rgba(0,0,0,.6); color: #fff; font-size: 12px;
+                   padding: 2px 8px; border-radius: 10px; }
+  .ln-tl { position: relative; display: flex; height: 26px; margin-top: 8px; border-radius: 4px; overflow: hidden; cursor: pointer; }
+  .ln-tl .seg { height: 100%; border-right: 2px solid var(--panel); display: flex; align-items: center; justify-content: center;
+                font-size: 11px; color: #fff; overflow: hidden; white-space: nowrap; min-width: 3px; }
+  .ln-tl .seg:last-child { border-right: 0; }
+  .ln-tl .head { position: absolute; top: 0; bottom: 0; width: 2px; background: #fff; pointer-events: none; }
+
+  /* tree */
+  .ln-step { margin-top: 12px; }
+  .ln-kids { margin-left: 16px; padding-left: 12px; border-left: 2px solid var(--edge); }
+  .ln-kids.off { opacity: .55; }
+  .ln-row { display: flex; gap: 10px; align-items: flex-start; }
+  .ln-start { width: 110px; flex: none; }
+  .ln-start img { border-style: dashed !important; }
+  .ln-takes { display: flex; flex-wrap: wrap; gap: 8px; }
+  .ln-take { width: 110px; position: relative; cursor: pointer; }
+  .ln-take .media { position: relative; width: 110px; aspect-ratio: var(--ar, 9/16); background: #000; border-radius: 6px;
+                    border: 2px solid var(--edge); overflow: hidden; }
+  .ln-take .media img, .ln-take .media video { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .ln-start .media { width: 110px; aspect-ratio: var(--ar, 9/16); border-radius: 6px; border: 2px dashed var(--edge); overflow: hidden; background: #000; }
+  .ln-start .media img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .ln-take.in .media { border-color: var(--accent); }
+  .ln-take.rej { opacity: .35; }
+  .ln-take .n { position: absolute; left: 4px; top: 4px; background: var(--accent); color: #fff; font-size: 11px; font-weight: 600;
+                border-radius: 9px; padding: 0 6px; }
+  .ln-take .tools { position: absolute; right: 3px; top: 3px; display: none; gap: 3px; }
+  .ln-take:hover .tools, .ln-take:focus-within .tools { display: flex; }
+  .ln-take .tools button { padding: 0 5px; font-size: 12px; line-height: 18px; }
+  .ln-take .lab { font-size: 12px; display: flex; justify-content: space-between; gap: 4px; }
+  .ln-arrow { align-self: center; color: var(--dim); }
+  .ln-sug { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
+  .ln-sug .c { width: 96px; font-size: 11px; }
+  .ln-sug img { width: 96px; border-radius: 4px; display: block; }
+</style>
+
+<h1>Lineage</h1>
+<p class="dim" style="margin-top:-6px">Clips that start on another clip's last frame are its children; clips sharing a first frame are alternate takes.
+  Click a take to make the chain end there, then play the whole chain.</p>
+
+<div class="card">
+  <div class="row"><b>Folders</b><span class="grow"></span>
+    <label>View <select id="scope"></select></label>
+    <button class="primary" id="scanAll">Index all folders</button>
+  </div>
+  <div id="folders" style="margin-top:6px"></div>
+  <div class="row" style="margin-top:8px">
+    <input id="newFolder" class="grow" placeholder="Folder path, e.g. D:\Generated\finished" style="min-width:220px">
+    <button id="addFolder">Add and index</button>
+    <button id="onceFolder" title="index and view this folder without adding it to the list">Index once</button>
+  </div>
+  <div class="row"><progress id="bar" hidden></progress><span id="barLbl" class="dim"></span></div>
+</div>
+
+<div class="ln-layout">
+  <div class="card">
+    <div class="row"><b>Chains</b><span class="dim" id="chainCount"></span></div>
+    <input id="q" placeholder="Filter by label or file name" style="width:100%;margin:8px 0">
+    <label class="dim"><input type="checkbox" id="multiOnly"> only chains with 2+ generations</label>
+    <div id="chainList" style="margin-top:6px"></div>
+  </div>
+
+  <div id="detail">
+    <div class="card dim" id="empty">Add a folder and index it, then pick a chain.</div>
+    <div class="card hidden" id="playerCard">
+      <div class="row"><b id="chTitle"></b><span class="dim" id="chInfo"></span><span class="grow"></span>
+        <button class="small" id="autoBtn" title="forget your pick and follow the deepest line">Automatic pick</button>
+        <button class="primary" id="publishBtn" title="open these clips in Color match, in this order">Color match and join…</button>
+      </div>
+      <div class="dim" id="pathText" style="margin:6px 0"></div>
+      <div class="ln-stage" id="stage"><video id="vA" playsinline preload="auto"></video><video id="vB" class="off" playsinline preload="auto"></video>
+        <span class="cap" id="cap"></span></div>
+      <div class="ln-tl" id="tl" title="click to jump"></div>
+      <div class="row" style="margin-top:8px">
+        <button id="prevBtn" title="previous clip">⏮</button>
+        <button class="primary" id="playBtn" style="min-width:80px">Play</button>
+        <button id="nextBtn" title="next clip">⏭</button>
+        <span class="mono" id="time">0:00.0 / 0:00.0</span>
+        <span class="grow"></span>
+        <label class="dim"><input type="checkbox" id="loop"> loop</label>
+      </div>
+    </div>
+    <div class="card hidden" id="treeCard">
+      <div class="row"><b>Generations</b><span class="dim">★ continued · number = position in your chain · hover a take to play it · ✕ reject · ☆ favourite</span></div>
+      <div id="tree"></div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+{% block script %}
+<script>
+let META = null, CH = null, CUR = null;
+const scopeQ = () => $("scope").value ? `scope=${encodeURIComponent($("scope").value)}` : "";
+const fmtT = t => `${Math.floor(t / 60)}:${(t % 60).toFixed(1).padStart(4, "0")}`;
+const segColor = k => `hsl(${(k * 137.5 + 210) % 360} 45% 38%)`;
+
+async function load(keep) {
+  META = await FK.api(`/api/lineage?${scopeQ()}`);
+  renderFolders();
+  renderChains();
+  if (META.active.length) FK.waitJob(META.active[0].id).then(() => load(true), FK.fail);
+  const want = keep && CUR ? CUR : +new URLSearchParams(location.search).get("chain") || null;
+  if (want && META.chains.some(c => c.number === want)) openChain(want, true);
+  else if (!keep) { CUR = null; showDetail(false); }
+}
+
+/* ---- folders & scope ---- */
+function renderFolders() {
+  const box = $("folders");
+  box.innerHTML = META.folders.length ? "" : '<div class="dim">No folders yet. Add the folder your finished clips land in.</div>';
+  for (const f of META.folders) {
+    const d = document.createElement("div");
+    d.className = "ln-folder";
+    d.innerHTML = `<span class="p mono"></span><button class="small idx">Index</button><button class="small view">View only this</button>
+      <button class="small danger rm">Remove</button>`;
+    d.querySelector(".p").textContent = f;
+    d.querySelector(".idx").onclick = () => scan(f);
+    d.querySelector(".view").onclick = () => { setScope(f); load(); };
+    d.querySelector(".rm").onclick = async () => {
+      if (!confirm("Stop indexing this folder? Files are not touched.")) return;
+      await FK.api("/api/lineage/folders", {json: {action: "remove", path: f}}); if ($("scope").value === f) setScope(""); load();
+    };
+    box.append(d);
+  }
+  const cur = $("scope").value || META.scope || "";
+  $("scope").innerHTML = "";
+  $("scope").add(new Option("All folders", ""));
+  for (const f of META.folders) $("scope").add(new Option(f.split(/[\\/]/).slice(-2).join("\\"), f));
+  if (cur && !META.folders.includes(cur)) $("scope").add(new Option(`${cur.split(/[\\/]/).pop()} (one-off)`, cur));
+  $("scope").value = cur;
+}
+function setScope(v) {
+  if (v && ![...$("scope").options].some(o => o.value === v)) $("scope").add(new Option(`${v.split(/[\\/]/).pop()} (one-off)`, v));
+  $("scope").value = v;
+}
+$("scope").onchange = () => load();
+async function scan(folder) {
+  try {
+    const j = await FK.runJob("/api/lineage/scan", folder ? {folder} : {}, $("bar"), $("barLbl"));
+    const r = j.result;
+    FK.toast(`Indexed ${r.probed} new clip${r.probed === 1 ? "" : "s"}` + (r.moved ? `, followed ${r.moved} moved` : "") +
+             (r.waiting ? `, ${r.waiting} still being written (index again shortly)` : "") +
+             (r.errors.length ? `, ${r.errors.length} unreadable` : ""), !!r.errors.length);
+    load(true);
+  } catch (e) { FK.fail(e); }
+}
+$("scanAll").onclick = () => scan(null);
+$("addFolder").onclick = async () => {
+  const p = $("newFolder").value.trim();
+  if (!p) return;
+  try {
+    const before = new Set(META.folders);
+    const r = await FK.api("/api/lineage/folders", {json: {path: p}});
+    $("newFolder").value = "";
+    await load(true);
+    scan(r.folders.find(f => !before.has(f)) || null);
+  }
+  catch (e) { FK.fail(e); }
+};
+$("onceFolder").onclick = async () => {
+  const p = $("newFolder").value.trim().replace(/^"|"$/g, "");
+  if (!p) return;
+  setScope(p);
+  await scan(p);
+};
+
+/* ---- chain list ---- */
+function renderChains() {
+  const q = $("q").value.trim().toLowerCase(), multi = $("multiOnly").checked;
+  const list = META.chains.filter(c => (!multi || c.depth > 1) &&
+    (!q || c.label.includes(q) || c.names.some(n => n.toLowerCase().includes(q))));
+  $("chainCount").textContent = `· ${list.length}${list.length !== META.chains.length ? ` of ${META.chains.length}` : ""}`;
+  const box = $("chainList");
+  box.innerHTML = list.length ? "" : '<div class="dim">No chains.</div>';
+  for (const c of list) {
+    const d = document.createElement("div");
+    d.className = "ln-ch" + (c.number === CUR ? " on" : "");
+    d.innerHTML = `<img loading="lazy" src="/media/lineage/${c.first}/first" alt="">
+      <div class="t"><div><b>${c.label}</b> <span class="dim">${c.depth} gen · ${c.clips} take${c.clips > 1 ? "s" : ""}</span></div>
+      <div class="dim">${FK.when(c.updated)}${c.suggestion ? " · maybe continues another" : ""}</div></div>`;
+    d.onclick = () => openChain(c.number);
+    box.append(d);
+  }
+}
+$("q").oninput = renderChains;
+$("multiOnly").onchange = renderChains;
+
+/* ---- one chain ---- */
+function showDetail(on) {
+  $("empty").classList.toggle("hidden", on);
+  $("playerCard").classList.toggle("hidden", !on);
+  $("treeCard").classList.toggle("hidden", !on);
+}
+async function openChain(n, quiet) {
+  try { CH = await FK.api(`/api/lineage/chain/${n}?${scopeQ()}`); } catch (e) { if (!quiet) FK.fail(e); return; }
+  CUR = n;
+  history.replaceState(null, "", `/lineage?chain=${n}`);
+  renderChains();
+  showDetail(true);
+  $("chTitle").textContent = CH.label;
+  $("chInfo").textContent = `· ${CH.depth} generation${CH.depth > 1 ? "s" : ""} · ${Object.keys(CH.clips).length} takes`;
+  renderTree();
+  setPath(CH.path);
+}
+async function pickTip(tip) {
+  try { CH = await FK.api(`/api/lineage/chain/${CUR}/pick?${scopeQ()}`, {json: {tip}}); renderTree(); setPath(CH.path); }
+  catch (e) { FK.fail(e); }
+}
+$("autoBtn").onclick = () => pickTip(null);
+
+function renderTree() {
+  const byLabel = Object.fromEntries(CH.steps.map(s => [s.label, s]));
+  const root = CH.steps.find(s => !s.up);
+  const pos = Object.fromEntries(CH.path.map((c, i) => [c, i + 1]));
+  const first = CH.clips[root.takes[0]];
+  document.documentElement.style.setProperty("--ar", `${first.width}/${first.height}`);
+  const box = $("tree");
+  box.innerHTML = "";
+  box.append(stepEl(root, byLabel, pos));
+}
+function stepEl(s, byLabel, pos) {
+  const d = document.createElement("div");
+  d.className = "ln-step";
+  const head = document.createElement("div");
+  head.className = "row";
+  let note;
+  if (!s.parent) note = "new chain" + (s.suggestion ? ` · looks close to ${s.suggestion.label} (${s.suggestion.score})` : "");
+  else note = `continues ${CH.clips[s.parent]?.label || "another clip"}` + (s.link === "probable" ? " (different size: probably upscaled)" : s.link === "manual" ? " (linked by hand)" : "");
+  if (s.alternates.length) note += ` · also matches ${s.alternates.map(a => a.label).join(", ")}`;
+  if (s.dups.length) note += ` · ${s.dups.length} duplicate file${s.dups.length > 1 ? "s" : ""}`;
+  head.innerHTML = `<b>${s.label}</b><span class="dim"></span><span class="grow"></span>`;
+  head.children[1].textContent = note;
+  const child = s.takes[0];
+  if (!s.parent) head.append(btn("Find parent…", () => findParent(s, d)));
+  else {
+    if (s.link === "manual") head.append(btn("Undo manual link", () => link({child, kind: "reset"})));
+    else head.append(btn("Not its parent", () => link({child, parent: s.parent, kind: "unlink"})));
+    head.append(btn("Change parent…", () => findParent(s, d)));
+  }
+  d.append(head);
+
+  const row = document.createElement("div");
+  row.className = "ln-row";
+  row.style.marginTop = "6px";
+  row.innerHTML = `<div class="ln-start"><div class="media"><img loading="lazy" src="/media/lineage/${s.takes[0]}/first" alt="start frame"></div>
+    <div class="dim" style="font-size:12px">start frame</div></div><span class="ln-arrow">→</span>`;
+  const takes = document.createElement("div");
+  takes.className = "ln-takes";
+  s.takes.forEach((cid, i) => takes.append(takeEl(cid, i + 1, pos)));
+  row.append(takes);
+  d.append(row);
+
+  if (s.children.length) {
+    const kids = document.createElement("div");
+    kids.className = "ln-kids";
+    for (const lab of s.children) {
+      const k = byLabel[lab];
+      const el = stepEl(k, byLabel, pos);
+      // off your chosen line: dim this step's own row only, so nested steps don't compound
+      if (!(k.parent in pos)) for (const part of el.querySelectorAll(":scope > .row, :scope > .ln-row")) part.style.opacity = ".55";
+      kids.append(el);
+    }
+    d.append(kids);
+  }
+  return d;
+}
+function btn(text, fn, cls = "small") {
+  const b = document.createElement("button");
+  b.className = cls; b.textContent = text; b.onclick = e => { e.stopPropagation(); fn(); };
+  return b;
+}
+function takeEl(cid, n, pos) {
+  const c = CH.clips[cid];
+  const d = document.createElement("div");
+  d.className = "ln-take" + (cid in pos ? " in" : "") + (c.mark === "reject" ? " rej" : "");
+  d.tabIndex = 0;
+  d.title = `${c.name}\n${c.width}×${c.height} · ${c.duration.toFixed(1)}s · click to end the chain here`;
+  d.innerHTML = `<div class="media"><img loading="lazy" src="/media/lineage/${cid}/last" alt="last frame of ${esc(c.label)}"></div>
+    ${cid in pos ? `<span class="n">${pos[cid]}</span>` : ""}
+    <div class="tools"></div>
+    <div class="lab"><span>t${n}${c.continued ? " ★" : ""}${c.mark === "star" ? " ♥" : ""}</span><span class="dim">${c.duration.toFixed(1)}s</span></div>`;
+  const tools = d.querySelector(".tools");
+  tools.append(btn(c.mark === "star" ? "♥" : "☆", () => setMark(cid, c.mark === "star" ? null : "star")),
+               btn("✕", () => setMark(cid, c.mark === "reject" ? null : "reject")));
+  const media = d.querySelector(".media");
+  let v = null, timer = null;
+  d.onmouseenter = () => {
+    timer = setTimeout(() => {
+      v = document.createElement("video");
+      v.src = `/media/lineage/${cid}/video`; v.muted = true; v.loop = true; v.autoplay = true; v.playsInline = true;
+      media.append(v); media.querySelector("img").style.display = "none";
+    }, 250);
+  };
+  d.onmouseleave = () => {
+    clearTimeout(timer);
+    if (v) { v.pause(); v.removeAttribute("src"); v.load(); v.remove(); v = null; media.querySelector("img").style.display = ""; }
+  };
+  d.onclick = () => pickTip(CH.path[CH.path.length - 1] === cid && CH.path.length > 1 ? CH.path[CH.path.length - 2] : cid);
+  d.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); d.onclick(); } };
+  return d;
+}
+async function setMark(cid, mark) {
+  try { await FK.api("/api/lineage/mark", {json: {clip: cid, mark}}); CH.clips[cid].mark = mark; renderTree(); }
+  catch (e) { FK.fail(e); }
+}
+async function link(body) {
+  try {
+    await FK.api(`/api/lineage/link?${scopeQ()}`, {json: body});
+    const keep = CUR;
+    META = await FK.api(`/api/lineage?${scopeQ()}`);
+    renderChains();
+    // the step may now belong to another chain; follow it there
+    const found = META.chains.find(c => c.number === keep) ? keep : null;
+    if (found) openChain(found); else { showDetail(false); FK.toast("Linked: this step now lives in its parent's chain."); }
+  } catch (e) { FK.fail(e); }
+}
+async function findParent(s, el) {
+  let box = el.querySelector(":scope > .ln-sugbox");
+  if (box) { box.remove(); return; }
+  box = document.createElement("div");
+  box.className = "ln-sugbox card";
+  box.style.cssText = "margin:8px 0;background:var(--panel2)";
+  box.innerHTML = `<div class="row"><b>Likely parents</b><span class="dim">by picture content, for handoff frames that were edited before reuse</span>
+    <span class="grow"></span><input placeholder="or type a label / file name" style="width:220px"><button class="small go">Link</button></div>
+    <div class="ln-sug dim">Comparing…</div>`;
+  el.insertBefore(box, el.children[1]);
+  box.querySelector(".go").onclick = () => {
+    const t = box.querySelector("input").value.trim();
+    if (t) link({child: s.takes[0], parent: t, kind: "link"});
+  };
+  try {
+    const list = await FK.api(`/api/lineage/suggest/${s.takes[0]}?${scopeQ()}`);
+    const g = box.querySelector(".ln-sug");
+    g.innerHTML = list.length ? "" : "Nothing to compare with.";
+    for (const x of list) {
+      const c = document.createElement("div");
+      c.className = "c";
+      c.innerHTML = `<img loading="lazy" src="/media/lineage/${x.clip}/last" alt=""><div><b>${esc(x.label || "")}</b> ${x.score}</div>`;
+      c.append(btn("Link", () => link({child: s.takes[0], parent: x.clip, kind: "link"})));
+      c.title = x.name;
+      g.append(c);
+    }
+  } catch (e) { box.querySelector(".ln-sug").textContent = e.message; }
+}
+
+/* ---- sequence player: the selected chain as one continuous video ----
+   Two stacked <video>s: one plays while the next clip waits, cued past its
+   repeated handoff frame, so the join is nearly seamless. */
+const P = {clips: [], total: 0, i: 0, playing: false, act: null, idle: null, ticking: false};
+function setPath(path) {
+  const was = P.playing;
+  stop();
+  P.clips = path.map((cid, k) => {
+    const c = CH.clips[cid];
+    const skip = k ? 1 / (c.fps || 16) : 0;  // children open on the parent's last frame
+    return {cid, label: c.label, skip, len: Math.max(0.05, c.duration - skip)};
+  });
+  let t = 0;
+  for (const c of P.clips) { c.at = t; t += c.len; }
+  P.total = t;
+  $("pathText").textContent = `Your chain: ${P.clips.map(c => c.label).join(" → ")} · ${fmtT(P.total)}` + (CH.picked ? "" : " (automatic: deepest line)");
+  const first = CH.clips[path[0]];
+  $("stage").style.aspectRatio = `${first.width} / ${first.height}`;
+  $("stage").style.maxWidth = first.height > first.width ? "420px" : "";
+  const tl = $("tl");
+  tl.innerHTML = "";
+  P.clips.forEach((c, k) => {
+    const s = document.createElement("div");
+    s.className = "seg"; s.style.flex = `${c.len} 0 0`; s.style.background = segColor(k);
+    s.textContent = c.label.replace(/^c\d+_/, ""); s.title = c.label;
+    tl.append(s);
+  });
+  const head = document.createElement("div");
+  head.className = "head"; head.id = "head";
+  tl.append(head);
+  P.act = $("vA"); P.idle = $("vB");
+  cue(P.act, 0, 0);
+  P.act.classList.remove("off"); P.idle.classList.add("off");
+  cueNext();
+  if (!P.ticking) { P.ticking = true; tick(); }
+  if (was) play();
+}
+function cue(v, i, offset) {
+  const c = P.clips[i];
+  const src = `/media/lineage/${c.cid}/video`;
+  if (!v.src.endsWith(src)) v.src = src;
+  const seek = () => { try { v.currentTime = c.skip + offset; } catch {} };
+  if (v.readyState >= 1) seek(); else v.addEventListener("loadedmetadata", seek, {once: true});
+  v.dataset.i = i;
+}
+function cueNext() {
+  if (P.i + 1 < P.clips.length) cue(P.idle, P.i + 1, 0);
+  else if ($("loop").checked && P.clips.length > 1) cue(P.idle, 0, 0);
+}
+function swap() {
+  const next = P.i + 1 < P.clips.length ? P.i + 1 : ($("loop").checked ? 0 : null);
+  if (next === null) { P.playing = false; $("playBtn").textContent = "Play"; return; }
+  if (+P.idle.dataset.i !== next) cue(P.idle, next, 0);
+  [P.act, P.idle] = [P.idle, P.act];
+  P.i = next;
+  P.act.classList.remove("off");
+  P.idle.classList.add("off");
+  P.idle.pause();
+  if (P.playing) P.act.play().catch(() => {});
+  cueNext();
+}
+for (const v of [$("vA"), $("vB")]) v.addEventListener("ended", () => { if (v === P.act) swap(); });
+function play() {
+  if (!P.clips.length) return;
+  if (P.i === P.clips.length - 1 && P.act.ended) jump(0);
+  P.playing = true; $("playBtn").textContent = "Pause";
+  P.act.play().catch(e => { P.playing = false; $("playBtn").textContent = "Play"; FK.fail(e); });
+}
+function stop() { P.playing = false; $("playBtn").textContent = "Play"; for (const v of [$("vA"), $("vB")]) v.pause(); P.i = 0; }
+$("playBtn").onclick = () => P.playing ? (P.playing = false, P.act.pause(), $("playBtn").textContent = "Play") : play();
+function jump(t) {
+  t = Math.max(0, Math.min(P.total - 0.01, t));
+  const i = Math.max(0, P.clips.findLastIndex(c => c.at <= t));
+  if (i === P.i) { try { P.act.currentTime = P.clips[i].skip + (t - P.clips[i].at); } catch {} return; }
+  P.act.pause();
+  P.i = i;
+  cue(P.act, i, t - P.clips[i].at);
+  if (P.playing) P.act.play().catch(() => {});
+  cueNext();
+}
+$("tl").onclick = e => { const r = $("tl").getBoundingClientRect(); jump((e.clientX - r.left) / r.width * P.total); };
+$("prevBtn").onclick = () => { const c = P.clips[P.i]; const into = P.act.currentTime - c.skip; jump(into > 1 || !P.i ? c.at : P.clips[P.i - 1].at); };
+$("nextBtn").onclick = () => { if (P.i + 1 < P.clips.length) jump(P.clips[P.i + 1].at); };
+function tick() {
+  const c = P.clips[P.i];
+  if (c && P.act) {
+    const t = c.at + Math.max(0, Math.min(c.len, P.act.currentTime - c.skip));
+    const head = $("head");
+    if (head) head.style.left = `calc(${(t / (P.total || 1)) * 100}% - 1px)`;
+    $("time").textContent = `${fmtT(t)} / ${fmtT(P.total)}`;
+    $("cap").textContent = `${P.i + 1}/${P.clips.length} · ${c.label}`;
+  }
+  requestAnimationFrame(tick);
+}
+document.addEventListener("keydown", e => {
+  if (e.target.matches("input, select, textarea") || $("playerCard").classList.contains("hidden")) return;
+  if (e.key === " ") { e.preventDefault(); $("playBtn").click(); }
+});
+
+$("publishBtn").onclick = async () => {
+  try {
+    const r = await FK.api("/api/lineage/publish", {json: {clips: CH.path}});
+    sessionStorage.setItem("fk.ids", JSON.stringify(r.ids));
+    location.href = "/colormatch?sel=1&ordered=1";
+  } catch (e) { FK.fail(e); }
+};
+
+load().catch(FK.fail);
+</script>
+{% endblock %}

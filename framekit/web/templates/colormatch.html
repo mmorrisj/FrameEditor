@@ -1,0 +1,596 @@
+{% extends "base.html" %}
+{% block main %}
+<style>
+  .cm-list { display: flex; flex-direction: column; gap: 4px; margin: 8px 0; }
+  .cm-seg { display: flex; gap: 10px; align-items: center; padding: 6px 8px; background: var(--panel2);
+            border: 1px solid var(--edge); border-radius: 6px; cursor: grab; flex-wrap: wrap; }
+  .cm-seg.drag-over { border-color: var(--accent); }
+  .cm-seg .n { font-weight: 600; width: 2.2em; color: var(--dim); }
+  .cm-warn { color: var(--amber); }
+  .cm-ref { max-height: 90px; border-radius: 4px; border: 1px solid var(--edge); }
+  .cm-chart { position: relative; margin-top: 8px; }
+  .cm-chart svg { display: block; width: 100%; overflow: visible; }
+  .cm-chart .tip { position: absolute; pointer-events: none; background: var(--panel2); border: 1px solid var(--edge);
+                   border-radius: 6px; padding: 6px 8px; font-size: 12px; white-space: nowrap; z-index: 2; }
+  .cm-chart .tip b { font-size: 13px; }
+  .cm-key { display: inline-block; width: 14px; height: 0; border-top: 2px solid; vertical-align: middle; margin-right: 5px; }
+  .cm-key.dash { border-top-style: dashed; }
+  .cm-legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 13px; color: var(--dim); }
+  .cm-preview img { max-width: 100%; border-radius: 6px; display: block; }
+  .cm-grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr)); gap: 16px; }
+  .cm-grid2 > * { min-width: 0; }
+  #cmPage select { max-width: 100%; }
+  #cmPage label { max-width: 100%; }
+  table.cm-t td, table.cm-t th { padding: 3px 8px; }
+  :root { --s-before: #d95926; --s-after: #3987e5; }
+</style>
+
+<div id="cmPage">
+<h1>Color match</h1>
+<p class="dim" style="margin-top:-6px">Fix the color drift that builds up across chained AI video segments, then join them into one video.
+  Add the segments in order; each one usually starts with the last frame of the one before, and that repeat is found and dropped at each join.</p>
+
+<div class="card">
+  <div class="row"><b>Segments</b><span class="dim" id="segCount"></span><span class="grow"></span>
+    <select id="libPick" style="max-width:280px"><option value="">Add from the library…</option></select>
+    <button id="upBtn">Upload segments</button><input type="file" id="upFile" accept="video/*" multiple hidden>
+    <button class="small" id="sortBtn" title="order by file name, numbers counted properly (seg2 before seg10)">Sort by name</button>
+    <button class="small" id="clearBtn">Clear</button>
+  </div>
+  <div class="cm-list" id="segs"></div>
+  <div class="dim" id="segHint">Drag to reorder. Segment 1 sets the size of the result; the frame rate is chosen under Settings.</div>
+</div>
+
+<div class="card">
+  <div class="cm-grid2">
+    <div class="col">
+      <b>Reference</b>
+      <label><input type="radio" name="refKind" value="first" checked> First frame of segment 1</label>
+      <label><input type="radio" name="refKind" value="image"> An image (the original start image)</label>
+      <div class="row hidden" id="refBox">
+        <button id="refBtn">Choose image</button><input type="file" id="refFile" accept="image/*" hidden>
+        <img id="refImg" class="cm-ref hidden" alt="reference image">
+      </div>
+    </div>
+    <div class="col">
+      <b>Settings</b>
+      <label class="row" style="flex-wrap:nowrap">Match <select id="mode" class="grow"></select></label>
+      <div class="dim cm-warn hidden" id="modeWarn">Matching every segment to the original drags any real color change (new scenery,
+        sunset, walking into shade) back toward the start image. Use it only when the shot's colors stay put.</div>
+      <div class="row">
+        <label>Method <select id="method"></select></label>
+        <label>Output <select id="fps" title="segments at another rate are converted; converting up repeats frames and can stutter"></select></label>
+      </div>
+      <div class="dim" id="methodNote"></div>
+      <div class="row">
+        <label title="how much of the brightness correction to apply">Brightness <input type="range" id="lumS" min="0" max="1" step="0.05" value="1" style="width:110px"></label>
+        <span class="mono" id="lumSVal">100%</span>
+        <label title="how much of the colour correction (tint, saturation) to apply">Colour <input type="range" id="colS" min="0" max="1" step="0.05" value="1" style="width:110px"></label>
+        <span class="mono" id="colSVal">100%</span>
+      </div>
+      <div class="row">
+        <label id="fitRow">Fit on the first <input type="number" id="fitFrames" min="1" max="60" value="5" style="width:4em"> frames</label>
+      </div>
+      <div class="dim">One transform is fitted per segment and applied to every frame, so there's no flicker and lighting changes inside a segment are kept.</div>
+    </div>
+  </div>
+  <div class="row" style="margin-top:12px">
+    <button class="primary" id="analyzeBtn">Analyse</button>
+    <progress id="bar" hidden></progress><span id="barLbl" class="dim"></span>
+  </div>
+</div>
+
+<div class="card hidden" id="resultCard">
+  <div class="row"><b>Result</b><span class="dim" id="resultInfo"></span></div>
+  <div id="warnings" class="cm-warn" style="margin-top:6px"></div>
+  <div id="joins" style="margin-top:8px"></div>
+
+  <div class="cm-legend" style="margin-top:12px">
+    <span><span class="cm-key" style="border-color:var(--s-before)"></span>as generated</span>
+    <span><span class="cm-key" style="border-color:var(--s-after)"></span>corrected</span>
+    <span><span class="cm-key dash" style="border-color:var(--dim)"></span>reference</span>
+    <span><span class="cm-key" style="border-color:var(--edge)"></span>segment boundary</span>
+  </div>
+  <div class="cm-grid2">
+    <div><div style="margin-top:10px">Brightness <span class="dim">(average luma, 0–255)</span></div>
+      <div class="cm-chart" id="chartLuma"></div></div>
+    <div><div style="margin-top:10px">Saturation <span class="dim">(average, %)</span></div>
+      <div class="cm-chart" id="chartSat"></div></div>
+  </div>
+  <details open style="margin-top:8px"><summary class="dim">Per segment: what changed</summary><div id="segTable" style="overflow-x:auto"></div></details>
+
+  <div style="margin-top:14px" class="cm-preview">
+    <div class="row">
+      <b>Preview</b><span class="dim">left: as generated · right: corrected</span><span class="grow"></span>
+      <label>Segment <select id="pvSeg"></select></label>
+      <label>Frame <input type="range" id="pvFrame" min="0" value="0" style="width:180px"></label>
+      <span class="mono" id="pvFrameVal"></span>
+    </div>
+    <img id="pvImg" alt="before and after preview" style="margin-top:8px">
+  </div>
+</div>
+
+<div class="card hidden" id="renderCard">
+  <div class="row">
+    <b>Render</b>
+    <label>Crossfade <input type="number" id="xfade" min="0" max="12" value="0" style="width:4em"> frames at each join</label>
+    <label><input type="checkbox" id="lossless"> Lossless (FFV1 .mkv, large)</label>
+    <label><input type="checkbox" id="clips"> Also each segment as its own clip</label>
+    <label><input type="checkbox" id="keep"> Keep the corrected PNG frames</label>
+    <span class="grow"></span>
+    <button class="primary" id="renderBtn">Render</button>
+  </div>
+  <div class="row"><progress id="rbar" hidden></progress><span id="rbarLbl" class="dim"></span></div>
+  <div id="outputs" style="margin-top:10px"></div>
+</div>
+
+<div class="cm-grid2">
+  <div class="card">
+    <b>Past sessions</b>
+    <div id="sessions" style="margin-top:6px"></div>
+  </div>
+  <div class="card">
+    <b>Correct one image</b>
+    <div class="dim">Match a single frame, such as a handoff frame before you feed it to the next generation, to a reference.</div>
+    <div class="row" style="margin-top:8px">
+      <label>Image <input type="file" id="oneImg" accept="image/*"></label>
+    </div>
+    <div class="row">
+      <label>Reference <input type="file" id="oneRef" accept="image/*"></label>
+      <span class="dim" id="oneRefNote"></span>
+    </div>
+    <div class="row"><button id="oneBtn">Correct and download</button></div>
+  </div>
+</div>
+</div>
+{% endblock %}
+{% block script %}
+<script>
+let LIBV = [], SEGS = [], S = null, REF = null, META = null;
+const natural = (a, b) => a.name.localeCompare(b.name, undefined, {numeric: true, sensitivity: "base"});
+const radio = () => document.querySelector("input[name=refKind]:checked").value;
+
+async function init() {
+  META = await FK.api("/api/colormatch");
+  for (const [k, v] of Object.entries(META.modes)) $("mode").add(new Option(v, k, false, k === "seam"));
+  for (const [k, v] of Object.entries(META.methods))
+    $("method").add(new Option(k === "exact" ? `${v} (recommended)` : v, k, false, k === "exact"));
+  $("mode").value = "seam"; $("method").value = "exact";
+  syncMode();
+  const lib = await FK.api("/api/library");
+  LIBV = lib.videos.filter(v => v.info).sort(natural);
+  for (const v of LIBV) $("libPick").add(new Option(`${v.name}  (${FK.dur(v.info.duration)})`, v.id));
+  if (new URLSearchParams(location.search).get("sel") === "1") {
+    let ids = [];
+    try { ids = JSON.parse(sessionStorage.getItem("fk.ids") || "[]"); } catch {}
+    SEGS = LIBV.filter(v => ids.includes(v.id));
+    // a chain from Lineage arrives in playback order; a library selection is sorted by name
+    if (new URLSearchParams(location.search).get("ordered") === "1") SEGS.sort((a, b) => ids.indexOf(a.id) - ids.indexOf(b.id));
+    else SEGS.sort(natural);
+  }
+  renderSegs();
+  renderSessions();
+  const sid = new URLSearchParams(location.search).get("session");
+  if (sid) openSession(sid);
+  const act = META.active.find(j => !j.finished);
+  if (act) FK.waitJob(act.id).then(() => renderSessions(), FK.fail);
+}
+
+/* ---- segments ---- */
+function renderSegs() {
+  const box = $("segs");
+  box.innerHTML = "";
+  $("segCount").textContent = SEGS.length ? `· ${SEGS.length}` : "";
+  const first = SEGS[0]?.info;
+  SEGS.forEach((v, k) => {
+    const d = document.createElement("div");
+    d.className = "cm-seg"; d.draggable = true;
+    const i = v.info || {};
+    const fv = $("fps").value;  // empty before the options are first built: treat as auto
+    const outFps = !fv || fv === "auto" ? commonFps() : +fv;
+    const odd = first && ((k > 0 && (i.width !== first.width || i.height !== first.height)) || (outFps && i.fps !== outFps));
+    d.innerHTML = `<span class="n">${k + 1}</span><span class="grow"></span>
+      <span class="dim">${FK.dur(i.duration)} · ${i.width}×${i.height} · ${i.fps} fps</span>
+      <button class="small danger" title="remove">✕</button>`;
+    const name = document.createElement("span");
+    name.textContent = v.name;
+    if (odd) { name.className = "cm-warn"; name.title = "differs in size or frame rate from the output; it will be converted to match"; }
+    d.children[1].append(name);
+    d.querySelector("button").onclick = () => { SEGS.splice(k, 1); renderSegs(); };
+    d.ondragstart = e => { e.dataTransfer.setData("text/plain", String(k)); e.dataTransfer.effectAllowed = "move"; };
+    d.ondragover = e => { e.preventDefault(); d.classList.add("drag-over"); };
+    d.ondragleave = () => d.classList.remove("drag-over");
+    d.ondrop = e => {
+      e.preventDefault(); d.classList.remove("drag-over");
+      const from = +e.dataTransfer.getData("text/plain");
+      if (from === k || isNaN(from)) return;
+      const [m] = SEGS.splice(from, 1); SEGS.splice(k, 0, m); renderSegs();
+    };
+    box.append(d);
+  });
+  if (!SEGS.length) box.innerHTML = '<div class="dim">No segments yet. Add them from the library or upload them.</div>';
+  fpsOptions();
+}
+$("libPick").onchange = () => {
+  const v = LIBV.find(x => x.id === $("libPick").value);
+  if (v) { SEGS.push(v); renderSegs(); }
+  $("libPick").value = "";
+};
+$("sortBtn").onclick = () => { SEGS.sort(natural); renderSegs(); };
+$("clearBtn").onclick = () => { SEGS = []; renderSegs(); };
+$("upBtn").onclick = () => $("upFile").click();
+$("upFile").onchange = async () => {
+  const files = [...$("upFile").files].sort((a, b) => a.name.localeCompare(b.name, undefined, {numeric: true}));
+  if (!files.length) return;
+  const fd = new FormData();
+  files.forEach(f => fd.append("video", f));
+  FK.toast(`Uploading ${files.length} file${files.length > 1 ? "s" : ""}…`);
+  try {
+    const r = await FK.api("/api/library/upload", {method: "POST", body: fd});
+    const lib = await FK.api("/api/library");
+    LIBV = lib.videos.filter(v => v.info).sort(natural);
+    for (const id of r.ids) { const v = LIBV.find(x => x.id === id); if (v) SEGS.push(v); }
+    renderSegs();
+  } catch (e) { FK.fail(e); }
+  $("upFile").value = "";
+};
+
+/* ---- reference and settings ---- */
+document.querySelectorAll("input[name=refKind]").forEach(r => r.onchange = () => $("refBox").classList.toggle("hidden", radio() !== "image"));
+$("refBtn").onclick = () => $("refFile").click();
+$("refFile").onchange = async () => {
+  const f = $("refFile").files[0];
+  if (!f) return;
+  const fd = new FormData(); fd.append("image", f);
+  try { setRef((await FK.api("/api/colormatch/reference", {method: "POST", body: fd})).token); }
+  catch (e) { FK.fail(e); }
+};
+function setRef(token) {
+  REF = token;
+  $("refImg").src = `/media/colormatch/ref/${token}`;
+  $("refImg").classList.remove("hidden");
+  $("oneRefNote").textContent = "or leave empty to use the reference above";
+}
+function syncMode() {
+  $("modeWarn").classList.toggle("hidden", $("mode").value !== "original");
+  const exact = $("method").value === "exact";
+  $("methodNote").textContent = exact
+    ? "Fits each segment from its repeated handoff frame, pixel for pixel, so every tone and hue is corrected its own way. " +
+      "A segment with no matching frame uses HM-MVGD-HM instead."
+    : "Matches the overall colour spread of the frames.";
+  $("fitRow").classList.toggle("hidden", exact && $("mode").value === "seam");
+}
+$("mode").onchange = syncMode;
+$("method").onchange = syncMode;
+$("fps").onchange = () => renderSegs();
+const pct = (inp, out) => { $(out).textContent = `${Math.round($(inp).value * 100)}%`; };
+$("lumS").oninput = () => pct("lumS", "lumSVal");
+$("colS").oninput = () => pct("colS", "colSVal");
+
+/* output frame rate: default to what most segments use, so the fewest are converted */
+function rateCounts() {
+  const rates = SEGS.map(v => v.info?.fps).filter(Boolean), count = {};
+  rates.forEach(r => count[r] = (count[r] || 0) + 1);
+  return {rates, count};
+}
+function commonFps() {  // the rate most segments use; ties go to the earlier segment
+  const {rates, count} = rateCounts();
+  const k = Object.keys(count).sort((a, b) => count[b] - count[a] || rates.indexOf(+a) - rates.indexOf(+b))[0];
+  return k ? +k : null;
+}
+function fpsOptions(keep) {
+  const sel = $("fps"), cur = keep ?? sel.value;
+  const {rates, count} = rateCounts();
+  const common = commonFps() == null ? undefined : String(commonFps());
+  sel.innerHTML = "";
+  sel.add(new Option(common ? `${+common} fps (what most segments use)` : "automatic", "auto"));
+  for (const r of Object.keys(count).map(Number).sort((a, b) => a - b))
+    if (String(r) !== common) sel.add(new Option(`${r} fps (converts ${rates.length - count[r]} segment${rates.length - count[r] === 1 ? "" : "s"})`, String(r)));
+  sel.value = [...sel.options].some(o => o.value === cur) ? cur : "auto";
+}
+
+/* ---- analyse ---- */
+function overlapOverrides() {
+  if (!S) return null;
+  const out = [null];
+  for (const j of S.joins) {
+    const el = document.querySelector(`input[data-join="${j.join}"]`);
+    out.push(el && el.value !== "" && +el.value !== j.detected ? +el.value : (j.forced ? j.used : null));
+  }
+  return out.some(v => v != null) ? out : null;
+}
+async function analyze(keepSession) {
+  if (!SEGS.length) return FK.toast("Add at least one segment.", true);
+  if (radio() === "image" && !REF) return FK.toast("Choose the reference image, or use the first frame of segment 1.", true);
+  const sameSegs = S && S.segments.length === SEGS.length && S.segments.every((s, k) => s.id === SEGS[k].id);
+  const body = {ids: SEGS.map(v => v.id), method: $("method").value, mode: $("mode").value,
+                fit_frames: +$("fitFrames").value, fps: $("fps").value,
+                luma_strength: +$("lumS").value, color_strength: +$("colS").value,
+                reference: radio() === "image" ? REF : null,
+                overlaps: keepSession && sameSegs ? overlapOverrides() : null,
+                session: keepSession && sameSegs ? S.id : null};
+  try {
+    const j = await FK.runJob("/api/colormatch/analyze", body, $("bar"), $("barLbl"));
+    await openSession(j.result.session);
+    renderSessions();
+  } catch (e) { FK.fail(e); }
+}
+$("analyzeBtn").onclick = () => analyze(false);
+
+async function openSession(sid) {
+  try { S = await FK.api(`/api/colormatch/${sid}`); } catch (e) { return FK.fail(e); }
+  history.replaceState(null, "", `/colormatch?session=${sid}`);
+  // bring the form in line with the session so re-analysing starts from it
+  const st = S.settings;
+  $("method").value = st.method; $("mode").value = st.mode; syncMode();
+  $("fitFrames").value = st.fit_frames;
+  $("lumS").value = st.luma_strength ?? st.strength ?? 1; $("lumS").oninput();
+  $("colS").value = st.color_strength ?? st.strength ?? 1; $("colS").oninput();
+  if (st.reference_token) { document.querySelector("input[value=image]").checked = true; setRef(st.reference_token); }
+  else document.querySelector("input[value=first]").checked = true;
+  $("refBox").classList.toggle("hidden", radio() !== "image");
+  const segs = S.segments.map(s => LIBV.find(v => v.id === s.id));
+  if (segs.every(Boolean)) { SEGS = segs; renderSegs(); }
+  fpsOptions(st.fps && st.fps !== "auto" ? String(+st.fps || st.fps) : "auto");
+  syncMode();
+  renderResult();
+}
+
+function renderResult() {
+  $("resultCard").classList.remove("hidden");
+  $("renderCard").classList.remove("hidden");
+  const st = S.settings;
+  const lum = st.luma_strength ?? st.strength ?? 1, col = st.color_strength ?? st.strength ?? 1;
+  $("resultInfo").textContent = `· ${S.segments.length} segments · ${META.methods[st.method] || st.method} · ` +
+    `${st.mode === "seam" ? "matched at the seams" : "matched to the original"} · reference: ${st.reference}` +
+    (S.stats.fps ? ` · ${+S.stats.fps.toFixed(3)} fps` : "") +
+    (lum !== 1 || col !== 1 ? ` · brightness ${Math.round(lum * 100)}%, colour ${Math.round(col * 100)}%` : "");
+  const w = $("warnings");
+  w.innerHTML = "";
+  for (const x of S.warnings) { const d = document.createElement("div"); d.textContent = "⚠ " + x; w.append(d); }
+
+  const jb = $("joins");
+  if (!S.joins.length) jb.innerHTML = "";
+  else {
+    jb.innerHTML = `<div class="dim">Repeated frames at each join. Detected automatically; change a number if it's wrong, then re-analyse.</div>
+      <div class="row" style="margin-top:4px" id="joinRow"></div>
+      <div class="row" style="margin-top:6px"><button class="small" id="reBtn">Re-analyse with these overlaps</button></div>`;
+    for (const j of S.joins) {
+      const d = document.createElement("label");
+      d.className = "row"; d.style.gap = "4px";
+      const note = j.detected ? `found ${j.detected}` : "none found";
+      d.innerHTML = `<span>${j.join}→${j.join + 1}</span>
+        <input type="number" min="0" max="${S.segments[j.join].frames - 1}" value="${j.used}" data-join="${j.join}" style="width:3.6em">
+        <span class="dim">${note}${j.forced ? " · set by hand" : ""}</span>`;
+      $("joinRow").append(d);
+    }
+    $("reBtn").onclick = () => analyze(true);
+  }
+
+  const fps = S.stats.fps || S.segments[0].fps || 25;
+  const st2 = S.stats;
+  chart($("chartLuma"), st2.before_luma, st2.after_luma, st2.ref_luma, st2.bounds, fps, v => v.toFixed(1));
+  chart($("chartSat"), st2.before_sat, st2.after_sat, st2.ref_sat, st2.bounds, fps, v => v.toFixed(1) + "%");
+  segTable();
+
+  const ps = $("pvSeg");
+  ps.innerHTML = "";
+  S.segments.forEach((s, k) => ps.add(new Option(`${k + 1}: ${s.name}`, k)));
+  ps.onchange = () => { const s = S.segments[+ps.value]; $("pvFrame").max = s.frames - 1; $("pvFrame").value = 0; preview(); };
+  $("pvFrame").max = S.segments[0].frames - 1; $("pvFrame").value = 0;
+  preview();
+  renderOutputs();
+}
+
+let pvTimer = null;
+function preview() {
+  $("pvFrameVal").textContent = `${+$("pvFrame").value + 1}/${+$("pvFrame").max + 1}`;
+  clearTimeout(pvTimer);
+  pvTimer = setTimeout(() => {
+    $("pvImg").src = `/api/colormatch/${S.id}/preview?seg=${$("pvSeg").value}&frame=${$("pvFrame").value}&t=${Date.now()}`;
+  }, 150);
+}
+$("pvFrame").oninput = preview;
+
+/* per segment: brightness and saturation before/after, the colour shift the correction
+   applied (average R, G, B), and which fit ran. Older sessions have no RGB numbers. */
+function segTable() {
+  const st = S.stats, b = [...st.bounds, st.before_luma.length];
+  const mean = (a, i, j) => a.slice(i, j).reduce((x, y) => x + y, 0) / Math.max(1, j - i);
+  const rgb = !!st.rgb_before;
+  const swatch = c => `<span title="average colour ${c.map(Math.round).join(", ")}" style="display:inline-block;width:12px;height:12px;border-radius:3px;vertical-align:-1px;border:1px solid var(--edge);background:rgb(${c.map(Math.round).join(",")})"></span>`;
+  const shift = (a, z) => a.map((v, n) => { const d = z[n] - v; return `<span>${d >= 0 ? "+" : "−"}${Math.abs(d).toFixed(1)}</span>`; }).join(" ");
+  let h = `<table class="cm-t"><thead><tr><th>Segment</th><th class="num">Brightness before</th><th class="num">after</th>
+    <th class="num">Saturation before</th><th class="num">after</th>
+    ${rgb ? `<th>Average colour</th><th class="num" title="how much the correction moved the average red, green and blue (0-255)">Shift R G B</th>` : ""}
+    <th>Fit</th></tr></thead><tbody>`;
+  S.segments.forEach((s, k) => {
+    const i = b[k], j = b[k + 1];
+    h += `<tr><td>${k + 1}: ${esc(s.name)}</td><td class="num">${mean(st.before_luma, i, j).toFixed(1)}</td>
+      <td class="num">${mean(st.after_luma, i, j).toFixed(1)}</td><td class="num">${mean(st.before_sat, i, j).toFixed(1)}%</td>
+      <td class="num">${mean(st.after_sat, i, j).toFixed(1)}%</td>
+      ${rgb ? `<td>${swatch(st.rgb_before[k])} → ${swatch(st.rgb_after[k])}</td><td class="num mono">${shift(st.rgb_before[k], st.rgb_after[k])}</td>` : ""}
+      <td class="dim">${esc(s.fit || st.method || "")}</td></tr>`;
+  });
+  h += `<tr><td class="dim">reference</td><td class="num dim" colspan="2">${st.ref_luma.toFixed(1)}</td>
+    <td class="num dim" colspan="2">${st.ref_sat.toFixed(1)}%</td>
+    ${rgb ? `<td>${swatch(st.rgb_ref)}</td><td></td>` : ""}<td></td></tr></tbody></table>`;
+  $("segTable").innerHTML = h;
+}
+
+/* ---- chart: one measure per chart, before vs after on a shared y-axis ---- */
+const NS = "http://www.w3.org/2000/svg";
+function el(tag, attrs, parent) {
+  const e = document.createElementNS(NS, tag);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+  if (parent) parent.append(e);
+  return e;
+}
+function niceTicks(lo, hi, n = 4) {
+  const span = hi - lo || 1, raw = span / n, mag = 10 ** Math.floor(Math.log10(raw));
+  const step = [1, 2, 2.5, 5, 10].map(m => m * mag).find(s => s >= raw);
+  const out = [];
+  for (let v = Math.ceil(lo / step) * step; v <= hi + 1e-9; v += step) out.push(+v.toFixed(6));
+  return out;
+}
+function chart(box, before, after, ref, bounds, fps, fmt) {
+  box.innerHTML = "";
+  const W = Math.max(300, box.clientWidth || 480), H = 200, m = {l: 40, r: 92, t: 16, b: 26};
+  const n = before.length, iw = W - m.l - m.r, ih = H - m.t - m.b;
+  let lo = Math.min(...before, ...after, ref), hi = Math.max(...before, ...after, ref);
+  const pad = (hi - lo) * 0.08 || 1; lo -= pad; hi += pad;
+  const x = i => m.l + (n > 1 ? i / (n - 1) : 0.5) * iw, y = v => m.t + (1 - (v - lo) / (hi - lo)) * ih;
+  const svg = el("svg", {viewBox: `0 0 ${W} ${H}`, height: H, role: "img",
+                         "aria-label": `${box.id === "chartLuma" ? "Brightness" : "Saturation"} over the joined video, as generated and corrected`}, box);
+  // recessive grid + y labels
+  for (const t of niceTicks(lo, hi)) {
+    el("line", {x1: m.l, x2: m.l + iw, y1: y(t), y2: y(t), stroke: "var(--edge)", "stroke-width": 1}, svg);
+    const tx = el("text", {x: m.l - 6, y: y(t) + 4, "text-anchor": "end", "font-size": 11, fill: "var(--dim)"}, svg);
+    tx.textContent = Math.round(t * 10) / 10;
+  }
+  // x labels in seconds
+  const secs = (n - 1) / fps;
+  for (const t of niceTicks(0, secs, 5)) {
+    const tx = el("text", {x: x(t * fps), y: H - 6, "text-anchor": "middle", "font-size": 11, fill: "var(--dim)"}, svg);
+    tx.textContent = `${t}s`;
+  }
+  // segment boundaries
+  bounds.forEach((b, k) => {
+    if (!k) return;
+    el("line", {x1: x(b), x2: x(b), y1: m.t, y2: m.t + ih, stroke: "var(--edge)", "stroke-width": 1.5}, svg);
+    const tx = el("text", {x: x(b) + 3, y: m.t + 10, "font-size": 10, fill: "var(--dim)"}, svg);
+    tx.textContent = k + 1;
+  });
+  // reference line
+  el("line", {x1: m.l, x2: m.l + iw, y1: y(ref), y2: y(ref), stroke: "var(--dim)", "stroke-width": 1.5, "stroke-dasharray": "5 4"}, svg);
+  // series
+  const path = a => a.map((v, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join("");
+  el("path", {d: path(before), fill: "none", stroke: "var(--s-before)", "stroke-width": 2, "stroke-linejoin": "round"}, svg);
+  el("path", {d: path(after), fill: "none", stroke: "var(--s-after)", "stroke-width": 2, "stroke-linejoin": "round"}, svg);
+  // direct labels at the right end, nudged apart so they never collide
+  const labels = [{v: before[n - 1], t: "as generated"}, {v: after[n - 1], t: "corrected"}, {v: ref, t: "reference"}]
+    .map(l => ({...l, py: y(l.v)})).sort((a, b) => a.py - b.py);
+  for (let i = 1; i < labels.length; i++) labels[i].py = Math.max(labels[i].py, labels[i - 1].py + 13);
+  for (const l of labels) {
+    const tx = el("text", {x: m.l + iw + 6, y: l.py + 4, "font-size": 11, fill: "var(--text)"}, svg);
+    tx.textContent = l.t;
+  }
+  // hover layer: crosshair snaps to the nearest frame, one tooltip lists every series
+  const hair = el("line", {y1: m.t, y2: m.t + ih, stroke: "var(--dim)", "stroke-width": 1, visibility: "hidden"}, svg);
+  const dots = [before, after].map((_, k) => el("circle", {r: 4, fill: k ? "var(--s-after)" : "var(--s-before)",
+                                                           stroke: "var(--panel)", "stroke-width": 2, visibility: "hidden"}, svg));
+  const hit = el("rect", {x: m.l, y: m.t, width: iw, height: ih, fill: "transparent", tabindex: 0}, svg);
+  const tip = document.createElement("div");
+  tip.className = "tip"; tip.hidden = true; box.append(tip);
+  let cur = 0;
+  const segOf = i => bounds.filter(b => b <= i).length;
+  function show(i) {
+    cur = Math.max(0, Math.min(n - 1, i));
+    const px = x(cur);
+    hair.setAttribute("x1", px); hair.setAttribute("x2", px); hair.setAttribute("visibility", "visible");
+    [before, after].forEach((a, k) => { dots[k].setAttribute("cx", px); dots[k].setAttribute("cy", y(a[cur])); dots[k].setAttribute("visibility", "visible"); });
+    tip.innerHTML = `<div class="dim">segment ${segOf(cur)} · ${(cur / fps).toFixed(2)}s</div>
+      <div><span class="cm-key" style="border-color:var(--s-after)"></span><b>${fmt(after[cur])}</b> <span class="dim">corrected</span></div>
+      <div><span class="cm-key" style="border-color:var(--s-before)"></span><b>${fmt(before[cur])}</b> <span class="dim">as generated</span></div>
+      <div><span class="cm-key dash" style="border-color:var(--dim)"></span><b>${fmt(ref)}</b> <span class="dim">reference</span></div>`;
+    tip.hidden = false;
+    const scale = box.clientWidth / W, left = px * scale;
+    tip.style.left = `${left + tip.offsetWidth + 14 > box.clientWidth ? left - tip.offsetWidth - 10 : left + 10}px`;
+    tip.style.top = "8px";
+  }
+  function hide() { hair.setAttribute("visibility", "hidden"); dots.forEach(d => d.setAttribute("visibility", "hidden")); tip.hidden = true; }
+  hit.addEventListener("pointermove", e => {
+    const r = svg.getBoundingClientRect(), sx = (e.clientX - r.left) * W / r.width;
+    show(Math.round((sx - m.l) / iw * (n - 1)));
+  });
+  hit.addEventListener("pointerleave", hide);
+  hit.addEventListener("focus", () => show(cur));
+  hit.addEventListener("blur", hide);
+  hit.addEventListener("keydown", e => {
+    const step = e.shiftKey ? Math.round(fps) : 1;
+    if (e.key === "ArrowRight") { show(cur + step); e.preventDefault(); }
+    if (e.key === "ArrowLeft") { show(cur - step); e.preventDefault(); }
+  });
+}
+let rsz = null;
+window.addEventListener("resize", () => { clearTimeout(rsz); rsz = setTimeout(() => S && renderResult(), 200); });
+
+/* ---- render ---- */
+$("renderBtn").onclick = async () => {
+  try {
+    await FK.runJob(`/api/colormatch/${S.id}/render`, {crossfade: +$("xfade").value, lossless: $("lossless").checked,
+      segment_clips: $("clips").checked, keep_frames: $("keep").checked}, $("rbar"), $("rbarLbl"));
+    S = await FK.api(`/api/colormatch/${S.id}`);
+    renderOutputs(); renderSessions();
+    FK.toast("Rendered.");
+  } catch (e) { FK.fail(e); }
+};
+function renderOutputs() {
+  const o = S.outputs, box = $("outputs");
+  if (!o) { box.innerHTML = '<div class="dim">Not rendered yet.</div>'; return; }
+  const f = name => `/api/colormatch/${S.id}/file/${name.split("/").map(encodeURIComponent).join("/")}`;
+  box.innerHTML = `<div class="row" style="align-items:flex-start">
+      ${o.lossless ? "" : `<video controls preload="metadata" src="${f(o.joined)}" style="max-width:560px;width:100%;border-radius:6px;background:#000"></video>`}
+      <div class="col">
+        <div><a href="${f(o.joined)}?dl=1">Download ${esc(o.joined)}</a></div>
+        <div class="dim">${o.frames} frames${o.crossfade ? ` · ${o.crossfade}-frame crossfades` : ""}${o.lossless ? " · lossless" : ""} · ${FK.when(o.rendered)}</div>
+        ${o.clips.length ? `<div><b>Segment clips</b><br>${o.clips.map(c => `<a href="${f(c)}?dl=1">${esc(c)}</a>`).join("<br>")}</div>` : ""}
+        <div><b>Corrected last frames</b> <span class="dim">(clean handoff images for regenerating the next segment)</span><br>
+          ${o.handoff.map(h => `<a href="${f("handoff/" + h)}?dl=1">${esc(h)}</a>`).join("<br>")}</div>
+        ${o.kept_frames ? `<div class="dim">PNG frames kept in the session's frames folder.</div>` : ""}
+      </div></div>`;
+}
+
+/* ---- sessions ---- */
+async function renderSessions() {
+  let d;
+  try { d = await FK.api("/api/colormatch"); } catch (e) { return FK.fail(e); }
+  const box = $("sessions");
+  box.innerHTML = d.sessions.length ? "" : '<div class="dim">None yet.</div>';
+  for (const s of d.sessions.slice(0, 30)) {
+    const r = document.createElement("div");
+    r.className = "row";
+    r.style.cssText = "padding:4px 0;border-top:1px solid var(--edge)";
+    r.innerHTML = `<span>${FK.when(s.created)}</span><span class="dim grow"></span>
+      <span class="dim">${s.rendered ? "rendered" : "analysed"}</span>
+      <button class="small open">Open</button><button class="small danger del">Delete</button>`;
+    r.querySelector(".grow").textContent = `${s.segments} segments: ${s.names.join(", ")}${s.segments > s.names.length ? ", …" : ""}`;
+    r.querySelector(".open").onclick = () => openSession(s.id);
+    r.querySelector(".del").onclick = async () => {
+      if (!confirm("Delete this session and its rendered files?")) return;
+      try {
+        await FK.api(`/api/colormatch/${s.id}`, {method: "DELETE"});
+        if (S && S.id === s.id) { S = null; $("resultCard").classList.add("hidden"); $("renderCard").classList.add("hidden"); history.replaceState(null, "", "/colormatch"); }
+        renderSessions();
+      } catch (e) { FK.fail(e); }
+    };
+    box.append(r);
+  }
+}
+
+/* ---- one image ---- */
+$("oneBtn").onclick = async () => {
+  const img = $("oneImg").files[0];
+  if (!img) return FK.toast("Choose the image to correct.", true);
+  const fd = new FormData();
+  fd.append("image", img);
+  if ($("oneRef").files[0]) fd.append("reference", $("oneRef").files[0]);
+  else if (REF) fd.append("reference", REF);
+  else return FK.toast("Choose a reference image.", true);
+  fd.append("method", $("method").value);
+  fd.append("luma_strength", $("lumS").value);
+  fd.append("color_strength", $("colS").value);
+  try {
+    const r = await fetch("/api/colormatch/image", {method: "POST", body: fd});
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
+    const url = URL.createObjectURL(await r.blob());
+    const a = document.createElement("a");
+    a.href = url; a.download = img.name.replace(/\.[^.]+$/, "") + "-matched.png";
+    document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  } catch (e) { FK.fail(e); }
+};
+
+init().catch(FK.fail);
+</script>
+{% endblock %}
