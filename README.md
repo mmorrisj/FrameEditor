@@ -6,6 +6,9 @@ works on its own, from the web app or the command line:
 | Tool | What it does |
 | --- | --- |
 | **Frames** | Break a video into images: every frame, every Nth frame, N per second, scene changes only, or keyframes only. Every frame's source timestamp is recorded. |
+| **Scenes** | Split a video into one clip per scene. Tune the sensitivity with a slider and see the cuts update instantly, merge scenes or add a cut at any point, then export frame-accurate clips (re-encoded) or fast ones (no re-encode, cuts snap to keyframes). |
+| **Lineage** | Work out which AI clip continues which. Clips that start on another clip's last frame are its children, and clips that share a first frame are alternate takes, so whole generation trees are rebuilt from the pictures alone. Index saved folders (or any one folder on its own), browse chains generation by generation, hover a take to play it, click takes to choose your chain, and play the chosen chain as one continuous video. Fix missed links by hand (with picture-content suggestions for handoff frames that were edited), then send the chain to Color match to join it. |
+| **Color match** | Fix the color drift that compounds across chained AI video segments (each one darker or more saturated than the last), then join them. One color transform is fitted per segment and applied to every frame, so nothing flickers and real lighting changes survive. By default each segment is matched to the corrected end of the one before it, at the repeated handoff frame, which is detected and dropped at each join. Frames go through PNG and the color conversion is pinned, so the tool adds no shift of its own. Methods: an exact fit from the repeated handoff frame (default; about 25-30% more accurate than distribution matching in tests), HM-MVGD-HM, MKL, HM-MKL-HM, MVGD and histogram matching. Brightness and colour corrections have separate strengths, and the output frame rate defaults to what most segments use. Also writes the corrected last frame of each segment for regenerating the next one, and can correct a single image. |
 | **Resize** | Scale videos without ever stretching the picture: by percent, to a height or width, or to an exact size. For a different shape, such as vertical or square, choose bars, a blurred background, or crop to fill, and preview a frame first. Non-square pixels and phone rotation are corrected, and audio is copied untouched. |
 | **Reverse** | Make a rewound copy that plays backwards, optionally faster or as a boomerang (forwards, then rewind). Audio can be reversed, kept playing forwards, or dropped. Long and high-resolution videos are reversed in chunks, so memory use stays flat. |
 | **Audio** | Pull the audio track out untouched (AAC stays AAC in an .m4a), or convert to WAV, FLAC or MP3. |
@@ -104,6 +107,12 @@ Folder arguments are indexed on the fly, so none of these need library setup.
 ```bash
 python -m framekit frames clip.mp4 --mode scene --value 0.3     # or all | nth | fps | keyframes
 python -m framekit audio ~/Videos --format copy                 # every video in a folder
+python -m framekit scenes clip.mp4 --list                     # show the cuts; drop --list to write clips
+python -m framekit lineage add D:/Generated/finished
+python -m framekit lineage scan                              # or: lineage scan D:/SomeFolder (just that one)
+python -m framekit lineage tree c007
+python -m framekit colormatch D:/Gen/shot1 --reference start.png  # a folder of segments, in name order
+python -m framekit colormatch-image handoff.png start.png          # match one frame to the original
 python -m framekit resize D:/Videos --preset 720p              # or --size 1080x1920 --fit blur
 python -m framekit reverse clip.mp4 --speed 2                   # or --boomerang, --audio keep|none
 python -m framekit dupes ~/Videos --deep                        # dry run, prints what it found
@@ -158,7 +167,7 @@ working. New ones go to `work/editor/`.
   - `samples.py`: cached per-video fingerprints.
   - `features.py`: perceptual hash and embeddings.
   - `fileops.py`: logged moves, quarantine, undo and purge.
-- `framekit/tools/` has one module per tool: `frames`, `audio`, `resize`, `reverse`, `dupes`,
+- `framekit/tools/` has one module per tool: `frames`, `scenes`, `lineage`, `colormatch`, `audio`, `resize`, `reverse`, `dupes`,
   `grouping`, `unique`, `analysis`, and `editor/`.
 - `start-framekit.bat` and `scripts/` hold the Windows launcher and the
   start-at-sign-in installer.

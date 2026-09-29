@@ -49,6 +49,7 @@ def probe(path: str) -> dict:
     proc = subprocess.run(
         ["ffprobe", "-v", "error", "-show_entries",
          "stream=index,codec_type,codec_name,width,height,avg_frame_rate,r_frame_rate,"
+         "pix_fmt,color_space,color_range,color_transfer,color_primaries,nb_frames,"
          "channels,sample_rate,duration,sample_aspect_ratio:stream_disposition=attached_pic"
          ":stream_side_data=rotation",
          "-show_entries", "format=duration,bit_rate,format_name", "-of", "json", path],
@@ -79,6 +80,11 @@ def probe(path: str) -> dict:
         "vcodec": vid.get("codec_name"),
         # pixel shape (non-1 = anamorphic) and display rotation (phones store portrait sideways)
         "sar": _frac((vid.get("sample_aspect_ratio") or "1:1").replace(":", "/")) or 1.0,
+        # how the stored YUV maps to RGB; decoding with the wrong matrix or range shifts colors
+        "pix_fmt": vid.get("pix_fmt"),
+        "color_space": vid.get("color_space"),
+        "color_range": vid.get("color_range"),
+        "nb_frames": int(vid["nb_frames"]) if str(vid.get("nb_frames", "")).isdigit() else 0,
         "rotation": int(next((float(sd["rotation"]) for sd in vid.get("side_data_list") or []
                               if "rotation" in sd), 0)) % 360,
         "container": fmt.get("format_name"),

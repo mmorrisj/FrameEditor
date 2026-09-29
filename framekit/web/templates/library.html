@@ -45,6 +45,9 @@
       <option value="blur">blurred background</option><option value="crop">crop to fill</option></select>
     <button id="zBtn">Resize</button>
     <span class="dim">|</span>
+    <button id="sBtn">Split into scenes</button>
+    <button id="cBtn" title="fix color drift across chained AI segments, then join them">Color match</button>
+    <span class="dim">|</span>
     <button id="dBtn">Find duplicates</button>
     <button id="gBtn">Group</button>
   </div>
@@ -153,7 +156,15 @@ $("zBtn").onclick = async () => {
     FK.toast(`${r.jobs.length} videos queued for resizing. The results appear on each video's page.`);
   } catch (e) { FK.fail(e); }
 };
+$("sBtn").onclick = async () => {
+  if (!need()) return;
+  try {
+    const r = await FK.api("/api/scenes/batch", {json: {ids: [...sel], mode: "exact"}});
+    FK.toast(`${r.jobs.length} videos queued for splitting. Open a video's "Split into scenes" page to see or fine-tune the cuts.`);
+  } catch (e) { FK.fail(e); }
+};
 $("dBtn").onclick = () => { if (need()) { sessionStorage.setItem("fk.ids", JSON.stringify([...sel])); location.href = "/dupes?sel=1"; } };
+$("cBtn").onclick = () => { if (need()) { sessionStorage.setItem("fk.ids", JSON.stringify([...sel])); location.href = "/colormatch?sel=1"; } };
 $("gBtn").onclick = () => { if (need()) { sessionStorage.setItem("fk.ids", JSON.stringify([...sel])); location.href = "/groups?sel=1"; } };
 load().catch(FK.fail);
 </script>

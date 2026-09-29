@@ -8,7 +8,8 @@ from flask import Blueprint, Response, abort, jsonify, render_template, request,
 from werkzeug.utils import secure_filename
 
 from .. import config, features, fileops, jobs, library, media, samples
-from ..tools import analysis, audio, dupes, frames, grouping, resize, reverse, unique
+from ..tools import (analysis, audio, colormatch, dupes, frames, grouping, lineage, resize, reverse, scenes,
+                     unique)
 
 bp = Blueprint("suite", __name__)
 
@@ -63,6 +64,12 @@ def page_run(vid, run):
     return render_template("run.html", page="library", vid=vid, run=run, title=v["name"])
 
 
+@bp.route("/video/<vid>/scenes")
+def page_scenes(vid):
+    v = _vid(vid)
+    return render_template("scenes.html", page="library", vid=vid, title=v["name"])
+
+
 @bp.route("/dupes")
 def page_dupes():
     return render_template("dupes.html", page="dupes")
@@ -76,6 +83,16 @@ def page_groups():
 @bp.route("/unique")
 def page_unique():
     return render_template("unique.html", page="unique")
+
+
+@bp.route("/lineage")
+def page_lineage():
+    return render_template("lineage.html", page="lineage")
+
+
+@bp.route("/colormatch")
+def page_colormatch():
+    return render_template("colormatch.html", page="colormatch")
 
 
 # --- jobs --------------------------------------------------------------------------
@@ -657,3 +674,368 @@ def api_resized_file(vid, name):
         os.remove(p)
         return jsonify(ok=True)
     return send_file(p, conditional=True, as_attachment=request.args.get("dl") == "1", download_name=name)
+
+
+# --- scene splitting ---------------------------------------------------------------------------
+
+@bp.route("/api/video/<vid>/scenes")
+def api_scenes(vid):
+    _vid(vid)
+    return jsonify(cuts=scenes.cuts(vid), exports=scenes.list_exports(vid),
+                   active=[j for j in jobs.active_for(vid) if j["kind"] == "scenes"])
+
+
+@bp.route("/api/video/<vid>/scenes/detect", methods=["POST"])
+def api_scenes_detect(vid):
+    v = _vid(vid)
+    return _job(jobs.submit("scenes", f"Find scenes: {v['name']}", lambda job: len(scenes.detect(job, vid)["times"]),
+                            ref=vid))
+
+
+@bp.route("/api/video/<vid>/scenes/settings", methods=["POST"])
+def api_scenes_settings(vid):
+    _vid(vid)
+    d = _body()
+    return jsonify(scenes.cuts(vid, scenes.save_state(vid, threshold=_num(d, "threshold"),
+                                                      min_len=_num(d, "min_len"))))
+
+
+@bp.route("/api/video/<vid>/scenes/cut", methods=["POST"])
+def api_scenes_cut(vid):
+    _vid(vid)
+    d = _body()
+    action = d.get("action")
+    if action == "reset":
+        return jsonify(scenes.reset_edits(vid))
+    t = _num(d, "t")
+    if t is None or t < 0:
+        abort(400, "a time is needed")
+    if action == "add":
+        return jsonify(scenes.add_cut(vid, t))
+    if action == "remove":
+        return jsonify(scenes.remove_cut(vid, t))
+    abort(400, "action must be add, remove or reset")
+
+
+@bp.route("/api/video/<vid>/scenes/export", methods=["POST"])
+def api_scenes_export(vid):
+    v = _vid(vid)
+    d = _body()
+    mode = d.get("mode", "exact")
+    if mode not in ("exact", "fast"):
+        abort(400, "mode must be exact or fast")
+    only = [int(n) for n in d.get("only") or []] or None
+    if not scenes.detected(vid):
+        abort(400, "find the scenes first")
+    return _job(jobs.submit("scenes", f"Split into scenes ({mode}): {v['name']}", scenes.export, vid,
+                            mode=mode, only=only, to_library=bool(d.get("library")), ref=vid))
+
+
+@bp.route("/api/scenes/batch", methods=["POST"])
+def api_scenes_batch():
+    d = _body()
+    mode = d.get("mode", "exact")
+    if mode not in ("exact", "fast"):
+        abort(400, "mode must be exact or fast")
+    out = []
+    for vid in d.get("ids", []):
+        v = _vid(vid)
+        out.append(jobs.submit("scenes", f"Split into scenes: {v['name']}", scenes.split_video, vid,
+                               mode=mode, to_library=bool(d.get("library")), ref=vid).id)
+    return jsonify(jobs=out)
+
+
+@bp.route("/api/video/<vid>/scenes/exports/<run>", methods=["DELETE"])
+def api_scenes_export_delete(vid, run):
+    _vid(vid)
+    scenes.delete_export(vid, run)
+    return jsonify(ok=True)
+
+
+@bp.route("/api/video/<vid>/scenes/exports/<run>/zip")
+def api_scenes_export_zip(vid, run):
+    _vid(vid)
+    p = scenes.zip_export(vid, run)
+    return send_file(p, as_attachment=True, download_name=os.path.basename(p))
+
+
+@bp.route("/api/video/<vid>/scenes/exports/<run>/<name>")
+def api_scenes_export_file(vid, run, name):
+    _vid(vid)
+    p = scenes.export_path(vid, run, name)
+    if not os.path.isfile(p):
+        abort(404)
+    return send_file(p, conditional=True)
+
+
+@bp.route("/media/scene/<vid>/<int:ms>")
+def media_scene(vid, ms):
+    _vid(vid)
+    return send_file(scenes.thumb(vid, ms / 1000), max_age=86400)
+
+
+# --- color match -------------------------------------------------------------------------------
+
+_REF = re.compile(r"^[0-9a-f]{16}$")
+_IMG_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
+
+
+def _cm(fn, *a):
+    try:
+        return fn(*a)
+    except ValueError as e:
+        abort(400, str(e))
+    except LookupError as e:
+        abort(404, str(e))
+
+
+def _save_upload_image(f, folder: str) -> str:
+    """Save an uploaded image as PNG under `folder`; returns its token."""
+    if not f or os.path.splitext(f.filename or "")[1].lower() not in _IMG_EXTS:
+        abort(400, "upload a JPG, PNG, WebP, BMP or TIFF image")
+    from PIL import Image
+    token = os.urandom(8).hex()
+    os.makedirs(folder, exist_ok=True)
+    try:
+        with Image.open(f.stream) as im:
+            im.convert("RGB").save(os.path.join(folder, token + ".png"))
+    except OSError:
+        abort(400, "that image couldn't be read")
+    return token
+
+
+def _ref_path(token: str | None) -> str | None:
+    if not token:
+        return None
+    if not _REF.match(token):
+        abort(400, "bad reference")
+    p = colormatch._root("_refs", token + ".png")
+    if not os.path.exists(p):
+        abort(404, "that reference image is gone; upload it again")
+    return p
+
+
+@bp.route("/api/colormatch")
+def api_colormatch():
+    return jsonify(sessions=colormatch.list_sessions(), methods=colormatch.METHODS, modes=colormatch.MODES,
+                   active=[j for j in jobs.active_for("colormatch")])
+
+
+@bp.route("/api/colormatch/reference", methods=["POST"])
+def api_colormatch_reference():
+    token = _save_upload_image(request.files.get("image"), colormatch._root("_refs"))
+    return jsonify(token=token)
+
+
+@bp.route("/media/colormatch/ref/<token>")
+def media_colormatch_ref(token):
+    return send_file(_ref_path(token), max_age=3600)
+
+
+@bp.route("/api/colormatch/analyze", methods=["POST"])
+def api_colormatch_analyze():
+    d = _body()
+    ids = d.get("ids") or []
+    if not ids:
+        abort(400, "add at least one segment")
+    vids = [_vid(i) for i in ids]
+    method, mode = d.get("method", "exact"), d.get("mode", "seam")
+    if method not in colormatch.METHODS or mode not in colormatch.MODES:
+        abort(400, "unknown method or mode")
+    fps = str(d.get("fps") or "auto").strip()
+    if not re.match(r"^(auto|first|\d{1,3}(\.\d+)?|\d{1,6}/\d{1,6})$", fps):
+        abort(400, "frame rate must be auto, first, or a number like 16 or 30000/1001")
+    ovl = d.get("overlaps")
+    if ovl is not None:
+        try:
+            ovl = [None if v in (None, "") else int(v) for v in ovl]
+        except (TypeError, ValueError):
+            abort(400, "overlaps must be whole numbers")
+    sid = d.get("session")
+    if sid and not colormatch.SID_RE.match(sid):
+        abort(400, "bad session id")
+    ref = _ref_path(d.get("reference"))
+    fit_frames = _num(d, "fit_frames", int) or 5
+    strength = _num(d, "strength")
+    return _job(jobs.submit(
+        "colormatch", f"Color match: analyse {len(vids)} segments", colormatch.analyze,
+        [v["path"] for v in vids], reference=ref, method=method, fit_frames=fit_frames, mode=mode,
+        strength=strength, luma_strength=_num(d, "luma_strength"), color_strength=_num(d, "color_strength"),
+        fps=fps, overlaps=ovl, names=[v["name"] for v in vids], session=sid, ids=ids, ref="colormatch"))
+
+
+@bp.route("/api/colormatch/<sid>", methods=["GET", "DELETE"])
+def api_colormatch_session(sid):
+    if request.method == "DELETE":
+        _cm(colormatch.delete, sid)
+        return jsonify(ok=True)
+    return jsonify(_cm(colormatch.load, sid))
+
+
+@bp.route("/api/colormatch/<sid>/preview")
+def api_colormatch_preview(sid):
+    seg = _num(request.args, "seg", int) or 0
+    frame = _num(request.args, "frame", int) or 0
+    return Response(_cm(colormatch.preview, sid, seg, frame), mimetype="image/png",
+                    headers={"Cache-Control": "no-store"})
+
+
+@bp.route("/api/colormatch/<sid>/render", methods=["POST"])
+def api_colormatch_render(sid):
+    _cm(colormatch.load, sid)
+    d = _body()
+    if jobs.active_for(f"colormatch:{sid}"):
+        abort(409, "this session is already rendering")
+    return _job(jobs.submit(
+        "colormatch", "Color match: render", colormatch.render, sid, lossless=bool(d.get("lossless")),
+        crossfade=_num(d, "crossfade", int) or 0, keep_frames=bool(d.get("keep_frames")),
+        segment_clips=bool(d.get("segment_clips")), ref=f"colormatch:{sid}"))
+
+
+@bp.route("/api/colormatch/<sid>/file/<path:name>")
+def api_colormatch_file(sid, name):
+    p = _cm(colormatch.output_path, sid, name)
+    if not os.path.isfile(p):
+        abort(404)
+    return send_file(p, conditional=True, as_attachment=request.args.get("dl") == "1")
+
+
+@bp.route("/api/colormatch/image", methods=["POST"])
+def api_colormatch_image():
+    """Correct one image (e.g. a handoff frame) against a reference; returns the PNG."""
+    folder = colormatch._root("_images")
+    src = _save_upload_image(request.files.get("image"), folder)
+    if request.files.get("reference"):
+        ref = os.path.join(folder, _save_upload_image(request.files["reference"], folder) + ".png")
+    else:
+        ref = _ref_path(request.form.get("reference")) or abort(400, "a reference image is needed")
+    method = request.form.get("method", "exact")
+    if method not in colormatch.METHODS:
+        abort(400, "unknown method")
+    strength = _num(request.form, "strength")
+    lum, col = _num(request.form, "luma_strength"), _num(request.form, "color_strength")
+    if lum is not None or col is not None:
+        base = 1.0 if strength is None else strength
+        strength = (base if lum is None else lum, base if col is None else col)
+    out = os.path.join(folder, src + "-matched.png")
+    colormatch.correct_image(os.path.join(folder, src + ".png"), ref, out, method,
+                             1.0 if strength is None else strength)
+    stem = secure_filename(os.path.splitext(request.files["image"].filename or "image")[0]) or "image"
+    return send_file(out, mimetype="image/png", as_attachment=True, download_name=f"{stem}-matched.png")
+
+
+# --- lineage -------------------------------------------------------------------------------------
+
+def _lin(fn, *a, **k):
+    try:
+        return fn(*a, **k)
+    except ValueError as e:
+        abort(400, str(e))
+    except LookupError as e:
+        abort(404, str(e))
+
+
+def _scope() -> str | None:
+    s = (request.args.get("scope") or _body().get("scope") or "").strip()
+    return s or None
+
+
+@bp.route("/api/lineage")
+def api_lineage():
+    scope = _scope()
+    return jsonify(folders=lineage.folders(), scope=scope, chains=_lin(lineage.chains, scope),
+                   backends=features.backends(),
+                   active=[j for j in jobs.active_for("lineage")])
+
+
+@bp.route("/api/lineage/folders", methods=["POST"])
+def api_lineage_folders():
+    d = _body()
+    path = (d.get("path") or "").strip()
+    if not path:
+        abort(400, "a folder path is needed")
+    if d.get("action") == "remove":
+        return jsonify(folders=lineage.remove_folder(path))
+    return jsonify(folders=_lin(lineage.add_folder, path))
+
+
+@bp.route("/api/lineage/scan", methods=["POST"])
+def api_lineage_scan():
+    d = _body()
+    only = d.get("folder")
+    if only:
+        only = os.path.abspath(only.strip().strip('"'))
+        if not os.path.isdir(only):
+            abort(400, f"no such folder: {only}")
+    elif not lineage.folders():
+        abort(400, "add a folder first")
+    if jobs.active_for("lineage"):
+        abort(409, "a lineage scan is already running")
+    label = f"Lineage: index {os.path.basename(only) if only else 'all folders'}"
+    return _job(jobs.submit("lineage", label, lineage.scan, only=[only] if only else None, ref="lineage"))
+
+
+@bp.route("/api/lineage/chain/<int:number>")
+def api_lineage_chain(number):
+    return jsonify(_lin(lineage.chain, number, _scope()))
+
+
+@bp.route("/api/lineage/chain/<int:number>/pick", methods=["POST"])
+def api_lineage_pick(number):
+    tip = _num(_body(), "tip", int)
+    return jsonify(_lin(lineage.pick, number, tip, _scope()))
+
+
+@bp.route("/api/lineage/mark", methods=["POST"])
+def api_lineage_mark():
+    d = _body()
+    _lin(lineage.mark, _num(d, "clip", int), d.get("mark") or None)
+    return jsonify(ok=True)
+
+
+@bp.route("/api/lineage/link", methods=["POST"])
+def api_lineage_link():
+    d = _body()
+    child = _num(d, "child", int)
+    parent = d.get("parent")
+    if isinstance(parent, str) and parent.strip() and not parent.strip().isdigit():
+        parent = lineage.resolve(parent, _scope())  # a label or file name
+        if parent is None:
+            abort(404, "no clip matches that label or name")
+    parent = int(parent) if parent not in (None, "") else None
+    _lin(lineage.override, child, parent, d.get("kind", "link"))
+    return jsonify(ok=True)
+
+
+@bp.route("/api/lineage/suggest/<int:cid>")
+def api_lineage_suggest(cid):
+    return jsonify(_lin(lineage.suggest, cid, _scope(), request.args.get("backend", "clip")))
+
+
+@bp.route("/api/lineage/publish", methods=["POST"])
+def api_lineage_publish():
+    """Put a chain's clips in the library (in place, under their folder) for Color match."""
+    ids = []
+    for cid in _body().get("clips") or []:
+        c = _lin(lineage.clip, int(cid))
+        if not os.path.exists(c["path"]):
+            abort(404, f"missing file: {c['path']}")
+        ids.append(library.add_path(c["path"], root=c["folder"])["id"])
+    if not ids:
+        abort(400, "no clips selected")
+    return jsonify(ids=ids)
+
+
+@bp.route("/media/lineage/<int:cid>/<which>")
+def media_lineage(cid, which):
+    if which in ("first", "last"):
+        p = lineage.thumb_path(cid, which)
+        if not os.path.exists(p):
+            abort(404)
+        return send_file(p, max_age=86400)
+    if which == "video":
+        c = _lin(lineage.clip, cid)
+        if not os.path.exists(c["path"]):
+            abort(404)
+        return send_file(c["path"], conditional=True)
+    abort(404)

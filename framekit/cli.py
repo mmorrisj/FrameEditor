@@ -275,6 +275,154 @@ def cmd_resize(a):
         _p(f"ok  {r['from'][0]}x{r['from'][1]} -> {r['to'][0]}x{r['to'][1]}  {out}")
 
 
+def cmd_scenes(a):
+    from .tools import scenes
+    for src in _video_files(a.targets):
+        v = _library_video(src)
+        jobs.run_sync(scenes.detect, v["id"], label=f"scanning {v['name']}")
+        state = dict(scenes.load_state(v["id"]))
+        if a.threshold is not None:
+            state["threshold"] = a.threshold
+        if a.min_length is not None:
+            state["min_len"] = a.min_length
+        c = scenes.cuts(v["id"], state)
+        _p(f"\n{src}: {len(c['scenes'])} scenes (sensitivity {state['threshold']}, min {state['min_len']}s)")
+        for s in c["scenes"]:
+            _p(f"  {s['n']:3d}  {s['start']:9.2f}s to {s['end']:9.2f}s  ({s['length']:.2f}s)")
+        if a.list:
+            continue
+        stem = os.path.splitext(os.path.basename(src))[0]
+        out = os.path.join(a.out or os.path.dirname(os.path.abspath(src)), f"{stem}-scenes")
+        r = jobs.run_sync(scenes.split, src, out, c["scenes"], mode="fast" if a.fast else "exact",
+                          info=v["info"], label="cutting")
+        _p(f"wrote {r['clips']} clips to {out}")
+
+
+def _natural(p: str):
+    import re
+    return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", os.path.basename(p))]
+
+
+def cmd_colormatch(a):
+    import shutil
+    from .tools import colormatch as cm
+    segs = []
+    for t in a.segments:  # a folder contributes its videos in natural order (seg2 before seg10)
+        segs += sorted(_video_files([t]), key=_natural) if os.path.isdir(t) else _video_files([t])
+    if not segs:
+        sys.exit("no segment videos found")
+    overlaps = None
+    if a.overlap:
+        vals = [None if v.strip() in ("", "auto") else int(v) for v in a.overlap.split(",")]
+        overlaps = [None] + vals
+    _p(f"{len(segs)} segments:")
+    for k, s in enumerate(segs, 1):
+        _p(f"  {k:3d}  {s}")
+    r = jobs.run_sync(cm.analyze, segs, reference=a.reference, method=a.method, fit_frames=a.fit_frames,
+                      mode=a.mode, strength=a.strength, luma_strength=a.brightness_strength,
+                      color_strength=a.color_strength, fps=a.fps, overlaps=overlaps, label="analysing")
+    s = cm.load(r["session"])
+    for w in s["warnings"]:
+        _p(f"warning: {w}")
+    _p(f"output {s['stats']['fps']:g} fps; fits: " + ", ".join(f"{k + 1}: {sg['fit']}" for k, sg in enumerate(s["segments"])))
+    for j in s["joins"]:
+        how = "set by hand" if j["forced"] else ("detected" if j["detected"] else "none found")
+        _p(f"  join {j['join']}->{j['join'] + 1}: {j['used']} repeated frame(s) dropped ({how})")
+    st, b = s["stats"], s["stats"]["bounds"] + [len(s["stats"]["before_luma"])]
+    _p(f"per segment: brightness, and average R G B (reference {st['ref_luma']:.1f}, {st['rgb_ref']}):")
+    for k in range(len(segs)):
+        bl, al = st["before_luma"][b[k]:b[k + 1]], st["after_luma"][b[k]:b[k + 1]]
+        if bl:
+            rb, ra = st["rgb_before"][k], st["rgb_after"][k]
+            _p(f"  {k + 1:3d}  {sum(bl) / len(bl):6.1f} -> {sum(al) / len(al):6.1f}   "
+               f"RGB {rb} -> {ra}  (shift {[round(y - x, 1) for x, y in zip(rb, ra)]})")
+    if a.analyze_only:
+        _p(f"session {r['session']} (open it in the web app to preview and render)")
+        return
+    out = jobs.run_sync(cm.render, r["session"], lossless=a.lossless, crossfade=a.crossfade,
+                        keep_frames=a.keep_frames, segment_clips=a.clips, label="rendering")
+    src_dir = cm._root(r["session"])
+    ext = os.path.splitext(out["joined"])[1]
+    dest = a.out or os.path.join(os.path.dirname(os.path.abspath(segs[0])), out["joined"])
+    if not os.path.splitext(dest)[1]:
+        dest += ext
+    os.makedirs(os.path.dirname(os.path.abspath(dest)), exist_ok=True)
+    shutil.copy2(os.path.join(src_dir, out["joined"]), dest)
+    extra = os.path.splitext(dest)[0] + "-handoff"
+    shutil.copytree(os.path.join(src_dir, "handoff"), extra, dirs_exist_ok=True)
+    for c in cm.load(r["session"])["outputs"]["clips"]:  # segment_02-colormatched.mp4 -> <out>-segment_02.mp4
+        shutil.copy2(os.path.join(src_dir, c), f"{os.path.splitext(dest)[0]}-{c.split('-')[0]}{ext}")
+    _p(f"wrote {dest} ({out['frames']} frames); corrected last frames in {extra}")
+    if a.keep_frames:
+        _p(f"PNG frames kept in {os.path.join(src_dir, 'frames')}")
+
+
+def cmd_colormatch_image(a):
+    from .tools import colormatch as cm
+    out = a.out or os.path.splitext(a.image)[0] + "-matched.png"
+    st = a.strength
+    if a.brightness_strength is not None or a.color_strength is not None:
+        st = (a.strength if a.brightness_strength is None else a.brightness_strength,
+              a.strength if a.color_strength is None else a.color_strength)
+    cm.correct_image(a.image, a.reference, out, a.method, st)
+    _p(f"wrote {out}")
+
+
+def cmd_lineage(a):
+    from .tools import lineage as ln
+    scope = os.path.abspath(a.folder) if getattr(a, "folder", None) else None
+    if a.action == "folders":
+        for f in ln.folders():
+            _p(f)
+        return
+    if a.action == "add":
+        for f in a.args:
+            ln.add_folder(f)
+        _p("\n".join(ln.folders()))
+        return
+    if a.action == "remove":
+        for f in a.args:
+            ln.remove_folder(f)
+        return
+    if a.action == "scan":
+        only = [os.path.abspath(f) for f in a.args] or None
+        if only:
+            scope = only[0] if len(only) == 1 else scope
+        r = jobs.run_sync(ln.scan, only=only, label="indexing")
+        _p(f"{r['probed']} clip(s) indexed, {r['moved']} moved, {r['missing']} gone"
+           + (f", {r['waiting']} still being written" if r["waiting"] else ""))
+        for e in r["errors"]:
+            _p(f"  ! {e}")
+        f = ln.forest(scope)
+        _p(f"{len(f['roots'])} chain(s), {len(f['groups'])} step(s), {len(f['dup_of'])} duplicate(s)")
+        return
+    if a.action == "tree":
+        number = None
+        if a.args:
+            t = a.args[0].lower().lstrip("c")
+            if not t.isdigit():
+                sys.exit("give a chain number, e.g. c007 or 7")
+            number = int(t)
+        _p("\n".join(ln.tree_lines(scope, number)) or "no chains (index a folder first)")
+        return
+    if a.action in ("link", "unlink", "reset"):
+        need = 1 if a.action == "reset" else 2
+        if len(a.args) != need:
+            sys.exit(f"usage: lineage {a.action} CHILD" + (" PARENT" if need == 2 else ""))
+        ids = []
+        for t in a.args:
+            cid = ln.resolve(t, scope)
+            if cid is None:
+                sys.exit(f"nothing matches {t!r}; use a label like c007_g03_t2 or a file name")
+            ids.append(cid)
+        ln.override(ids[0], ids[1] if need == 2 else None, a.action)
+        f = ln.forest(scope)
+        g = f["group_of"][f["dup_of"].get(ids[0], ids[0])]
+        _p("\n".join(ln.tree_lines(scope, g.chain)))
+        return
+    sys.exit(f"unknown action {a.action}")
+
+
 def cmd_serve(a):
     if a.log:  # background runs (pythonw) have no console: send all output to a file
         import logging
@@ -359,6 +507,58 @@ def main(argv=None):
     s.add_argument("--quality", choices=["high", "balanced", "small"], default="high")
     s.add_argument("--out", help="output folder (default: next to each video)")
     s.set_defaults(fn=cmd_resize)
+
+    s = sub.add_parser("scenes", help="split videos into one clip per scene")
+    s.add_argument("targets", nargs="+", help="video files or folders")
+    s.add_argument("--threshold", type=float, help="scene-change sensitivity 0-1; lower = more cuts (default 0.3)")
+    s.add_argument("--min-length", type=float, help="ignore scenes shorter than this many seconds (default 1)")
+    s.add_argument("--fast", action="store_true", help="no re-encode; cuts move to the next keyframe")
+    s.add_argument("--list", action="store_true", help="only print the scenes, don't write clips")
+    s.add_argument("--out", help="parent folder for the clips (default: next to each video)")
+    s.set_defaults(fn=cmd_scenes)
+
+    from .tools.colormatch import METHODS as CM_METHODS
+    s = sub.add_parser("colormatch", help="fix color drift across chained AI video segments and join them")
+    s.add_argument("segments", nargs="+", help="segment videos in order, or a folder of them (sorted by name)")
+    s.add_argument("--reference", help="the original start image (default: first frame of segment 1)")
+    s.add_argument("--method", choices=list(CM_METHODS), default="exact",
+                   help="exact (default): fit from the repeated handoff frame, pixel for pixel; "
+                        "falls back to hm-mvgd-hm where there's no matching frame")
+    s.add_argument("--fps", default="auto",
+                   help="output frame rate: auto (what most segments use, default), first, or a number")
+    s.add_argument("--brightness-strength", type=float, help="0-1, how much of the brightness correction to apply")
+    s.add_argument("--color-strength", type=float, help="0-1, how much of the colour correction to apply")
+    s.add_argument("--mode", choices=["seam", "original"], default="seam",
+                   help="seam: match each segment to the end of the previous one (default); "
+                        "original: match every segment to the reference")
+    s.add_argument("--fit-frames", type=int, default=5, help="frames used to fit each transform (default 5)")
+    s.add_argument("--strength", type=float, default=1.0, help="0-1, how much of the correction to apply")
+    s.add_argument("--overlap", help="repeated frames per join, comma separated, 'auto' to detect (e.g. 1,1,auto)")
+    s.add_argument("--crossfade", type=int, default=0, help="blend this many frames at each join (0-12)")
+    s.add_argument("--lossless", action="store_true", help="write a lossless FFV1 .mkv instead of H.264 .mp4")
+    s.add_argument("--clips", action="store_true", help="also write each corrected segment as its own clip")
+    s.add_argument("--keep-frames", action="store_true", help="keep the corrected PNG frames")
+    s.add_argument("--analyze-only", action="store_true", help="print the analysis, don't render")
+    s.add_argument("--out", help="output video path (default: next to the first segment)")
+    s.set_defaults(fn=cmd_colormatch)
+
+    s = sub.add_parser("colormatch-image", help="color match one image to a reference image")
+    s.add_argument("image")
+    s.add_argument("reference")
+    s.add_argument("--method", choices=list(CM_METHODS), default="exact")
+    s.add_argument("--strength", type=float, default=1.0)
+    s.add_argument("--brightness-strength", type=float)
+    s.add_argument("--color-strength", type=float)
+    s.add_argument("--out", help="output PNG (default: <image>-matched.png)")
+    s.set_defaults(fn=cmd_colormatch_image)
+
+    s = sub.add_parser("lineage", help="rebuild parent/child chains of AI clips from first and last frames",
+                       description="actions: folders | add FOLDER... | remove FOLDER... | scan [FOLDER...] | "
+                                   "tree [CHAIN] | link CHILD PARENT | unlink CHILD PARENT | reset CHILD")
+    s.add_argument("action", choices=["folders", "add", "remove", "scan", "tree", "link", "unlink", "reset"])
+    s.add_argument("args", nargs="*", help="folders, a chain (c007), or clip labels / file names")
+    s.add_argument("--folder", help="work within just this folder instead of every saved one")
+    s.set_defaults(fn=cmd_lineage)
 
     s = sub.add_parser("dupes", help="find duplicate videos (dry run unless --apply)")
     s.add_argument("dirs", nargs="*", help="folders to check (default: library folders)")
