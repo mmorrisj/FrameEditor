@@ -78,7 +78,7 @@ SID_RE = re.compile(r"^[0-9]{8}-[0-9]{6}-[0-9a-f]{4}$")
 
 
 def _root(*parts: str) -> str:
-    return os.path.join(config.WORK, "colormatch", *parts)
+    return os.path.join(config.COLORMATCH, *parts)
 
 
 # ==== transforms ============================================================================
@@ -280,7 +280,8 @@ def color_in(info: dict) -> str:
     return f"in_color_matrix={matrix}:in_range={rng}"
 
 
-def decode_small(path: str, info: dict, width: int = SMALL_W, target: dict | None = None) -> np.ndarray:
+def decode_small(path: str, info: dict, width: int = SMALL_W, target: dict | None = None,
+                 end: int | None = None) -> np.ndarray:
     """Every frame as (n, h, w, 3) uint8 RGB at analysis size, color-exact."""
     tw = target["width"] if target else info["width"]
     th = target["height"] if target else info["height"]
@@ -289,6 +290,8 @@ def decode_small(path: str, info: dict, width: int = SMALL_W, target: dict | Non
     vf = f"scale={width}:{h}:{color_in(info)}:flags=area+accurate_rnd+full_chroma_int,format=rgb24"
     if target and target.get("fps_frac") and info.get("fps_frac") != target["fps_frac"]:
         vf = f"fps={target['fps_frac']}," + vf
+    if end:  # the segment ends at this source frame (frames after it are not used)
+        vf = f"trim=end_frame={int(end)}," + vf
     proc = subprocess.run(["ffmpeg", "-v", "error", "-i", path, "-an", "-vf", vf, "-f", "rawvideo", "-"],
                           capture_output=True, **_NOWIN)
     if proc.returncode != 0:
@@ -297,7 +300,8 @@ def decode_small(path: str, info: dict, width: int = SMALL_W, target: dict | Non
     return np.frombuffer(proc.stdout[: n * width * h * 3], np.uint8).reshape(n, h, width, 3)
 
 
-def extract_png(path: str, info: dict, out_dir: str, target: dict | None = None, job=None) -> int:
+def extract_png(path: str, info: dict, out_dir: str, target: dict | None = None, job=None,
+                end: int | None = None) -> int:
     """Full-resolution PNG frames, color-exact (lossless between decode and encode)."""
     os.makedirs(out_dir, exist_ok=True)
     tw = target["width"] if target else info["width"]
@@ -305,6 +309,8 @@ def extract_png(path: str, info: dict, out_dir: str, target: dict | None = None,
     vf = f"scale={tw}:{th}:{color_in(info)}:flags=lanczos+accurate_rnd+full_chroma_int,format=rgb24"
     if target and target.get("fps_frac") and info.get("fps_frac") != target["fps_frac"]:
         vf = f"fps={target['fps_frac']}," + vf
+    if end:
+        vf = f"trim=end_frame={int(end)}," + vf
     media.run(["ffmpeg", "-y", "-loglevel", "error", "-i", path, "-an", "-vf", vf,
                "-compression_level", "1", os.path.join(out_dir, "f%06d.png")],
               job=job, duration=info.get("duration") or 0)
@@ -412,7 +418,8 @@ def analyze(job, segments: list[str], reference: str | None = None, method: str 
             fit_frames: int = 5, mode: str = "seam", strength: float | None = None,
             overlaps: list[int | None] | None = None, names: list[str] | None = None,
             session: str | None = None, ids: list[str] | None = None, fps: str | None = "auto",
-            luma_strength: float | None = None, color_strength: float | None = None) -> dict:
+            luma_strength: float | None = None, color_strength: float | None = None,
+            ends: list[int | None] | None = None) -> dict:
     """Probe, check, detect overlaps and fit one transform per segment (at analysis size)."""
     if len(segments) < 1:
         raise ValueError("add at least one segment")
@@ -444,7 +451,7 @@ def analyze(job, segments: list[str], reference: str | None = None, method: str 
     for k, (p, i) in enumerate(zip(segments, infos)):
         if job:
             job.check()
-        small.append(decode_small(p, i, target=target))
+        small.append(decode_small(p, i, target=target, end=ends[k] if ends and k < len(ends) else None))
         if job:
             job.update(progress=k + 1)
     if any(len(s) == 0 for s in small):
@@ -515,7 +522,8 @@ def analyze(job, segments: list[str], reference: str | None = None, method: str 
         "segments": [{"path": p, "name": (names[k] if names else os.path.basename(p)),
                       "id": ids[k] if ids else None,
                       "frames": int(len(small[k])), "fps": infos[k]["fps"], "fps_frac": infos[k].get("fps_frac"),
-                      "width": infos[k]["width"], "height": infos[k]["height"], "overlap": ovl[k], "fit": fits[k]}
+                      "width": infos[k]["width"], "height": infos[k]["height"], "overlap": ovl[k], "fit": fits[k],
+                      "end": ends[k] if ends and k < len(ends) else None}
                      for k, p in enumerate(segments)],
         "target": target, "joins": joins, "warnings": warnings,
         "settings": {"method": method, "fit_frames": fit_frames, "mode": mode,
@@ -633,7 +641,7 @@ def render(job, sid: str, lossless: bool = False, crossfade: int = 0, keep_frame
         raw = os.path.join(d, "raw")
         shutil.rmtree(raw, ignore_errors=True)
         info = media.probe(sg["path"])
-        n = extract_png(sg["path"], info, raw, s["target"])
+        n = extract_png(sg["path"], info, raw, s["target"], end=sg.get("end"))
         files = sorted(f for f in os.listdir(raw) if f.endswith(".png"))
         skip = sg["overlap"] if k > 0 else 0
         seg_start = out_n + 1

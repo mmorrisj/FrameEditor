@@ -6,6 +6,12 @@ cd /d "%~dp0"
 
 set "PY=python"
 if exist "venv\Scripts\python.exe" set "PY=venv\Scripts\python.exe"
+rem Host and port can also come from .env (FRAMEKIT_HOST=..., FRAMEKIT_PORT=...); a variable
+rem already set in the environment wins. FrameKit itself reads the rest of .env.
+if exist ".env" for /f "usebackq eol=# tokens=1,* delims==" %%a in (".env") do (
+  if /i "%%a"=="FRAMEKIT_HOST" if not defined FRAMEKIT_HOST set "FRAMEKIT_HOST=%%~b"
+  if /i "%%a"=="FRAMEKIT_PORT" if not defined FRAMEKIT_PORT set "FRAMEKIT_PORT=%%~b"
+)
 if "%FRAMEKIT_HOST%"=="" set "FRAMEKIT_HOST=127.0.0.1"
 if "%FRAMEKIT_PORT%"=="" set "FRAMEKIT_PORT=8082"
 

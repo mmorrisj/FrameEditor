@@ -7,7 +7,7 @@ works on its own, from the web app or the command line:
 | --- | --- |
 | **Frames** | Break a video into images: every frame, every Nth frame, N per second, scene changes only, or keyframes only. Every frame's source timestamp is recorded. |
 | **Scenes** | Split a video into one clip per scene. Tune the sensitivity with a slider and see the cuts update instantly, merge scenes or add a cut at any point, then export frame-accurate clips (re-encoded) or fast ones (no re-encode, cuts snap to keyframes). |
-| **Lineage** | Work out which AI clip continues which. Clips that start on another clip's last frame are its children, and clips that share a first frame are alternate takes, so whole generation trees are rebuilt from the pictures alone. Index saved folders (or any one folder on its own), browse chains generation by generation, hover a take to play it, click takes to choose your chain, and play the chosen chain as one continuous video. Fix missed links by hand (with picture-content suggestions for handoff frames that were edited), then send the chain to Color match to join it. |
+| **Lineage** | Work out which AI clip continues which. Clips that start on another clip's last frame are its children, and clips that share a first frame are alternate takes, so whole generation trees are rebuilt from the pictures alone. Index saved folders (or any one folder on its own), browse chains generation by generation, hover a take to play it, click takes to choose your chain, and play the chosen chain as one continuous video. Fix missed links by hand (with picture-content suggestions for handoff frames that were edited), then send the chain to Color match to join it. A take can end before its last frame (e.g. when the face is hidden at the very end): set the end frame, nudge it a frame at a time with a live preview and face check, and save that frame as a handoff PNG. A clip generated from it links back automatically, even if you later move the end. |
 | **Color match** | Fix the color drift that compounds across chained AI video segments (each one darker or more saturated than the last), then join them. One color transform is fitted per segment and applied to every frame, so nothing flickers and real lighting changes survive. By default each segment is matched to the corrected end of the one before it, at the repeated handoff frame, which is detected and dropped at each join. Frames go through PNG and the color conversion is pinned, so the tool adds no shift of its own. Methods: an exact fit from the repeated handoff frame (default; about 25-30% more accurate than distribution matching in tests), HM-MVGD-HM, MKL, HM-MKL-HM, MVGD and histogram matching. Brightness and colour corrections have separate strengths, and the output frame rate defaults to what most segments use. Also writes the corrected last frame of each segment for regenerating the next one, and can correct a single image. |
 | **Resize** | Scale videos without ever stretching the picture: by percent, to a height or width, or to an exact size. For a different shape, such as vertical or square, choose bars, a blurred background, or crop to fill, and preview a frame first. Non-square pixels and phone rotation are corrected, and audio is copied untouched. |
 | **Reverse** | Make a rewound copy that plays backwards, optionally faster or as a boomerang (forwards, then rewind). Audio can be reversed, kept playing forwards, or dropped. Long and high-resolution videos are reversed in chunks, so memory use stays flat. |
@@ -65,6 +65,12 @@ Optional extras:
 - **CLIP grouping** groups by content ("a red car on a beach") instead of look.
   Install with `pip install -r requirements-clip.txt`. The model (about 600 MB)
   downloads on first use and uses a GPU when one is available.
+- **Face likeness** (Lineage) scores how closely each take's face matches the
+  face in its chain's original start frame, so you can see which takes stayed on
+  model and where a chain drifts. Install with
+  `pip install --no-deps insightface==2.0` then `pip install -r requirements-faces.txt`.
+  The InsightFace models (about 300 MB) download once, run locally (GPU when
+  available), and are licensed for non-commercial use.
 - **Audio fingerprints** in duplicate detection catch copies that were cropped or
   overlaid. They need Chromaprint's `fpcalc` on PATH. On Windows, download it
   from acoustid.org/chromaprint and put `fpcalc.exe` in a folder on PATH.
@@ -77,16 +83,42 @@ The web app works on the videos inside the configured folders, listed in
 so the browser can never point the app elsewhere on disk. Uploads from the web
 app land in `work/uploads`, which is always part of the library.
 
-Everything the suite generates lives under `work/` (override with
-`FRAMEKIT_WORK`): the index database, cached fingerprints, extracted frames and
-audio, exports, and the quarantine. It is gitignored and safe to delete. Your
+Everything the suite generates lives under `work/` by default: the index
+database, cached fingerprints, extracted frames and audio, exports, colour
+match renders, and the quarantine. It is gitignored and safe to delete. Your
 video files are only ever touched by an explicit quarantine or "move into
 group folders", and both can be undone.
+
+## Directories and environment variables
+
+Every directory can be set with an environment variable, or in a `.env` file
+next to this README: copy `.env.example` to `.env` and uncomment what you
+need. A variable already set in the environment wins over the file, relative
+paths are taken from this folder, and lists use `;` between folders on
+Windows. `.env` is gitignored.
+
+| Variable | What it sets | Default |
+|---|---|---|
+| `FRAMEKIT_WORK` | index, caches, thumbnails, extracted frames | `work` |
+| `FRAMEKIT_CONFIG` | saved folder list and tool settings | `framekit.json` |
+| `FRAMEKIT_UPLOADS` | uploaded videos (always a library folder) | `work\uploads` |
+| `FRAMEKIT_EXPORTS` | zips, contact sheets, exported frames and groups | `work\exports` |
+| `FRAMEKIT_QUARANTINE` | files set aside by duplicate removal (keep on the same drive as your videos) | `work\quarantine` |
+| `FRAMEKIT_HANDOFF_DIR` | frames saved as handoff PNGs from Lineage | `work\lineage\handoff` |
+| `FRAMEKIT_COLORMATCH_DIR` | colour match sessions and rendered videos | `work\colormatch` |
+| `FRAMEKIT_ROOTS` | library folders, added to the saved ones | |
+| `FRAMEKIT_LINEAGE_DIRS` | lineage folders, added to the saved ones (shown as "from .env") | |
+| `FRAMEKIT_FRAME_INBOX` | Unique frames drop folder, if none is saved | `work\frames-inbox` |
+| `FRAMEKIT_HOST`, `FRAMEKIT_PORT` | web app address | `127.0.0.1`, `8082` |
+| `HF_HUB_OFFLINE=1` | never contact Hugging Face once the CLIP model is downloaded | |
+
+`python -m framekit dirs` prints where everything ends up. Library scans skip
+FrameKit's own folders even if you place them inside a library folder.
 
 ## Unique frames drop folder
 
 Drop images on the Unique frames page, or copy them into `work\frames-inbox`.
-To use another folder, add `"unique": {"inbox": "D:/Frames"}` to `framekit.json`.
+To use another folder, set `FRAMEKIT_FRAME_INBOX`, or add `"unique": {"inbox": "D:/Frames"}` to `framekit.json` (which wins).
 Each subfolder is its own set, and sets are never compared with each other.
 
 With watching on, a set is processed a few seconds after it stops changing,
@@ -111,6 +143,9 @@ python -m framekit scenes clip.mp4 --list                     # show the cuts; d
 python -m framekit lineage add D:/Generated/finished
 python -m framekit lineage scan                              # or: lineage scan D:/SomeFolder (just that one)
 python -m framekit lineage tree c007
+python -m framekit lineage faces c007                        # likeness of every take to the original face
+python -m framekit lineage end c007_g03_t2 58                # end a take at frame 58 ("full" to undo)
+python -m framekit lineage export c007_g03_t2 58             # save frame 58 as a handoff PNG
 python -m framekit colormatch D:/Gen/shot1 --reference start.png  # a folder of segments, in name order
 python -m framekit colormatch-image handoff.png start.png          # match one frame to the original
 python -m framekit resize D:/Videos --preset 720p              # or --size 1080x1920 --fit blur

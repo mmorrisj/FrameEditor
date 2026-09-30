@@ -1,0 +1,17 @@
+# Optional: face likeness checks (Lineage), to catch AI identity drift.
+# Install insightface itself without its dependencies first, because it would pull in
+# the CPU onnxruntime, which clashes with the GPU build below:
+#     pip install --no-deps insightface==2.0
+#     pip install -r requirements-faces.txt
+# The models (buffalo_l, ~300 MB) download once to ~/.insightface/models on first use
+# and are licensed for non-commercial use.
+#
+# onnxruntime-gpu 1.22 is built for CUDA 12, so it can use the CUDA libraries that
+# ship with a CUDA 12 build of torch (requirements-clip.txt). Without a GPU, replace
+# it with plain `onnxruntime`; face checks then run on the CPU (slower, still fine).
+onnxruntime-gpu==1.22.0
+onnx>=1.13
+opencv-python>=4.8
+scikit-image>=0.21
+tqdm
+requests
