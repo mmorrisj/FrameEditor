@@ -47,6 +47,13 @@
   .ln-take:hover .tools, .ln-take:focus-within .tools { display: flex; }
   .ln-take .tools button { padding: 0 5px; font-size: 12px; line-height: 18px; }
   .ln-take .lab { font-size: 12px; display: flex; justify-content: space-between; gap: 4px; }
+  .ln-face { position: absolute; left: 4px; bottom: 4px; font-size: 11px; font-weight: 600; padding: 0 5px;
+             border-radius: 8px; background: rgba(0,0,0,.72); white-space: nowrap; }
+  .ln-face.on { color: #0ca30c; } .ln-face.drift { color: #fab219; } .ln-face.off { color: #d03b3b; }
+  .ln-flegend span { margin-right: 12px; }
+  .ln-endbox { margin: 8px 0; background: var(--panel2); }
+  .ln-endbox .pic { max-width: 100%; max-height: 360px; border-radius: 6px; background: #000; display: block; }
+  .ln-endbox input[type=number] { width: 5em; }
   .ln-arrow { align-self: center; color: var(--dim); }
   .ln-sug { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
   .ln-sug .c { width: 96px; font-size: 11px; }
@@ -83,10 +90,13 @@
     <div class="card dim" id="empty">Add a folder and index it, then pick a chain.</div>
     <div class="card hidden" id="playerCard">
       <div class="row"><b id="chTitle"></b><span class="dim" id="chInfo"></span><span class="grow"></span>
+        <button class="small hidden" id="facesBtn" title="find the faces in every take and compare them with the chain's original face">Check faces</button>
         <button class="small" id="autoBtn" title="forget your pick and follow the deepest line">Automatic pick</button>
         <button class="primary" id="publishBtn" title="open these clips in Color match, in this order">Color match and join…</button>
       </div>
       <div class="dim" id="pathText" style="margin:6px 0"></div>
+      <div class="dim" id="facePath" style="margin:-2px 0 6px"></div>
+      <div class="row"><progress id="fbar" hidden></progress><span id="fbarLbl" class="dim"></span></div>
       <div class="ln-stage" id="stage"><video id="vA" playsinline preload="auto"></video><video id="vB" class="off" playsinline preload="auto"></video>
         <span class="cap" id="cap"></span></div>
       <div class="ln-tl" id="tl" title="click to jump"></div>
@@ -100,7 +110,9 @@
       </div>
     </div>
     <div class="card hidden" id="treeCard">
-      <div class="row"><b>Generations</b><span class="dim">★ continued · number = position in your chain · hover a take to play it · ✕ reject · ☆ favourite</span></div>
+      <div class="row"><b>Generations</b><span class="dim">★ continued · number = position in your chain · hover a take to play it · ✕ reject · ☆ favourite</span>
+        <span class="grow"></span><label class="dim hidden" id="sortWrap"><input type="checkbox" id="sortFace"> most like the original first</label></div>
+      <div class="dim ln-flegend hidden" id="faceLegend" style="margin-top:4px"></div>
       <div id="tree"></div>
     </div>
   </div>
@@ -130,12 +142,14 @@ function renderFolders() {
   for (const f of META.folders) {
     const d = document.createElement("div");
     d.className = "ln-folder";
-    d.innerHTML = `<span class="p mono"></span><button class="small idx">Index</button><button class="small view">View only this</button>
-      <button class="small danger rm">Remove</button>`;
+    const fromEnv = (META.env_folders || []).includes(f);
+    d.innerHTML = `<span class="p mono"></span>${fromEnv ? '<span class="dim" title="set by FRAMEKIT_LINEAGE_DIRS in .env or the environment">from .env</span>' : ""}
+      <button class="small idx">Index</button><button class="small view">View only this</button>
+      ${fromEnv ? "" : '<button class="small danger rm">Remove</button>'}`;
     d.querySelector(".p").textContent = f;
     d.querySelector(".idx").onclick = () => scan(f);
     d.querySelector(".view").onclick = () => { setScope(f); load(); };
-    d.querySelector(".rm").onclick = async () => {
+    if (!fromEnv) d.querySelector(".rm").onclick = async () => {
       if (!confirm("Stop indexing this folder? Files are not touched.")) return;
       await FK.api("/api/lineage/folders", {json: {action: "remove", path: f}}); if ($("scope").value === f) setScope(""); load();
     };
@@ -214,6 +228,7 @@ async function openChain(n, quiet) {
   try { CH = await FK.api(`/api/lineage/chain/${n}?${scopeQ()}`); } catch (e) { if (!quiet) FK.fail(e); return; }
   CUR = n;
   history.replaceState(null, "", `/lineage?chain=${n}`);
+  renderFaceInfo();
   renderChains();
   showDetail(true);
   $("chTitle").textContent = CH.label;
@@ -226,6 +241,42 @@ async function pickTip(tip) {
   catch (e) { FK.fail(e); }
 }
 $("autoBtn").onclick = () => pickTip(null);
+
+/* ---- face likeness: each take vs the chain's original face ---- */
+const FACE = {on: ["✓", "on model"], drift: ["!", "drifting"], off: ["✕", "off model"]};
+const pctF = v => v == null ? "–" : Math.round(v * 100);
+function renderFaceInfo() {
+  const f = CH.faces || {};
+  $("facesBtn").classList.toggle("hidden", !f.available);
+  $("facesBtn").textContent = f.checked ? (f.checked < f.total ? `Check faces (${f.total - f.checked} new)` : "Recheck faces") : "Check faces";
+  const done = f.available && f.checked > 0;
+  $("sortWrap").classList.toggle("hidden", !done);
+  $("faceLegend").classList.toggle("hidden", !done);
+  if (done) {
+    const ref = CH.clips[f.ref];
+    $("faceLegend").innerHTML = `Likeness to the original face${ref ? ` (${esc(ref.label)}'s first frame)` : ""}, 0-100:
+      <span class="ln-face on" style="position:static">✓ ${pctF(f.on)}+ on model</span>
+      <span class="ln-face drift" style="position:static">! ${pctF(f.drift)}-${pctF(f.on) - 1} drifting</span>
+      <span class="ln-face off" style="position:static">✕ below ${pctF(f.drift)} off model</span>
+      <span>· average of six frames; "→ n" = the final frame, when it's lower (it seeds the next generation)</span>`;
+    if (!f.ref) $("faceLegend").textContent = "No face found in this chain's start frame, so there is nothing to compare with.";
+  }
+}
+function faceBadge(c) {
+  const f = c.face;
+  if (!f || f.mean == null) return f && f.samples ? `<span class="ln-face off" title="no face found in this take">no face</span>` : "";
+  const [glyph, word] = FACE[f.band] || ["", ""];
+  const end = f.last != null && f.last < f.mean - 0.1 ? ` → ${pctF(f.last)}` : "";
+  return `<span class="ln-face ${f.band}" title="${word}: likeness to the original face ${pctF(f.mean)} on average, ` +
+    `lowest ${pctF(f.min)}, final frame ${pctF(f.last)} (face found in ${f.n} of ${f.samples} frames)">${glyph} ${pctF(f.mean)}${end}</span>`;
+}
+$("facesBtn").onclick = async () => {
+  try {
+    await FK.runJob(`/api/lineage/faces?${scopeQ()}`, {chain: CUR}, $("fbar"), $("fbarLbl"));
+    openChain(CUR, true);
+  } catch (e) { FK.fail(e); }
+};
+$("sortFace").onchange = () => renderTree();
 
 function renderTree() {
   const byLabel = Object.fromEntries(CH.steps.map(s => [s.label, s]));
@@ -244,7 +295,7 @@ function stepEl(s, byLabel, pos) {
   head.className = "row";
   let note;
   if (!s.parent) note = "new chain" + (s.suggestion ? ` · looks close to ${s.suggestion.label} (${s.suggestion.score})` : "");
-  else note = `continues ${CH.clips[s.parent]?.label || "another clip"}` + (s.link === "probable" ? " (different size: probably upscaled)" : s.link === "manual" ? " (linked by hand)" : "");
+  else note = `continues ${CH.clips[s.parent]?.label || "another clip"}` + (s.branch ? ` from frame ${s.branch}` : "") + (s.link === "probable" ? " (different size: probably upscaled)" : s.link === "manual" ? " (linked by hand)" : "");
   if (s.alternates.length) note += ` · also matches ${s.alternates.map(a => a.label).join(", ")}`;
   if (s.dups.length) note += ` · ${s.dups.length} duplicate file${s.dups.length > 1 ? "s" : ""}`;
   head.innerHTML = `<b>${s.label}</b><span class="dim"></span><span class="grow"></span>`;
@@ -265,7 +316,9 @@ function stepEl(s, byLabel, pos) {
     <div class="dim" style="font-size:12px">start frame</div></div><span class="ln-arrow">→</span>`;
   const takes = document.createElement("div");
   takes.className = "ln-takes";
-  s.takes.forEach((cid, i) => takes.append(takeEl(cid, i + 1, pos)));
+  const order = s.takes.map((cid, i) => [cid, i + 1]);  // take numbers stay fixed when sorted
+  if ($("sortFace").checked) order.sort((a, b) => (CH.clips[b[0]].face?.mean ?? -2) - (CH.clips[a[0]].face?.mean ?? -2));
+  order.forEach(([cid, n]) => takes.append(takeEl(cid, n, pos)));
   row.append(takes);
   d.append(row);
 
@@ -294,20 +347,23 @@ function takeEl(cid, n, pos) {
   d.className = "ln-take" + (cid in pos ? " in" : "") + (c.mark === "reject" ? " rej" : "");
   d.tabIndex = 0;
   d.title = `${c.name}\n${c.width}×${c.height} · ${c.duration.toFixed(1)}s · click to end the chain here`;
-  d.innerHTML = `<div class="media"><img loading="lazy" src="/media/lineage/${cid}/last" alt="last frame of ${esc(c.label)}"></div>
+  const pic = c.end ? `/media/lineage/${cid}/frame/${c.end}?h=240` : `/media/lineage/${cid}/last`;  // the frame it ends on
+  d.innerHTML = `<div class="media"><img loading="lazy" src="${pic}" alt="end frame of ${esc(c.label)}">${faceBadge(c)}</div>
     ${cid in pos ? `<span class="n">${pos[cid]}</span>` : ""}
     <div class="tools"></div>
-    <div class="lab"><span>t${n}${c.continued ? " ★" : ""}${c.mark === "star" ? " ♥" : ""}</span><span class="dim">${c.duration.toFixed(1)}s</span></div>`;
+    <div class="lab"><span>t${n}${c.continued ? " ★" : ""}${c.mark === "star" ? " ♥" : ""}</span><span class="dim">${c.end ? `✂ ${c.end}/${c.frames}` : `${c.duration.toFixed(1)}s`}</span></div>`;
   const tools = d.querySelector(".tools");
-  tools.append(btn(c.mark === "star" ? "♥" : "☆", () => setMark(cid, c.mark === "star" ? null : "star")),
+  tools.append(btn("✂", () => openEnd(cid, d.closest(".ln-step"))),
+               btn(c.mark === "star" ? "♥" : "☆", () => setMark(cid, c.mark === "star" ? null : "star")),
                btn("✕", () => setMark(cid, c.mark === "reject" ? null : "reject")));
+  tools.firstChild.title = "set where this take ends (frame number)";
   const media = d.querySelector(".media");
   let v = null, timer = null;
   d.onmouseenter = () => {
     timer = setTimeout(() => {
       v = document.createElement("video");
       v.src = `/media/lineage/${cid}/video`; v.muted = true; v.loop = true; v.autoplay = true; v.playsInline = true;
-      media.append(v); media.querySelector("img").style.display = "none";
+      media.insertBefore(v, media.firstChild); media.querySelector("img").style.display = "none";
     }, 250);
   };
   d.onmouseleave = () => {
@@ -318,6 +374,91 @@ function takeEl(cid, n, pos) {
   d.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); d.onclick(); } };
   return d;
 }
+/* ---- end frame: where a take stops, e.g. before the face is hidden at the very end ---- */
+function openEnd(cid, stepEl) {
+  const c = CH.clips[cid];
+  const old = stepEl.querySelector(":scope > .ln-endbox");
+  if (old) { const same = +old.dataset.cid === cid; old.remove(); if (same) return; }
+  const box = document.createElement("div");
+  box.className = "ln-endbox card";
+  box.dataset.cid = cid;
+  const fps = c.fps || 16, total = c.frames;
+  box.innerHTML = `<div class="row"><b>End frame · ${esc(c.label)}</b><span class="dim">${total} frames at ${+fps.toFixed(3)} fps</span>
+      <span class="grow"></span><button class="small x">Close</button></div>
+    <div class="row" style="align-items:flex-start;margin-top:8px">
+      <img class="pic" alt="the chosen frame">
+      <div class="col">
+        <div class="row">
+          <button class="small" data-d="-10">−10</button><button class="small" data-d="-1">−1</button>
+          <label>frame <input type="number" min="2" max="${total}" class="num"></label>
+          <button class="small" data-d="1">+1</button><button class="small" data-d="10">+10</button>
+        </div>
+        <div class="dim when"></div>
+        <div class="face"></div>
+        <div class="row" style="margin-top:6px">
+          <button class="primary set">End the take here</button>
+          <button class="whole">Use the whole clip</button>
+        </div>
+        <div class="row"><button class="small exp" title="save this frame full size as a PNG to start the next generation from">Save this frame as a handoff PNG</button></div>
+        <div class="dim state"></div>
+      </div>
+    </div>`;
+  stepEl.insertBefore(box, stepEl.children[1]);
+  const num = box.querySelector(".num");
+  num.value = c.end || total;
+  const state = () => box.querySelector(".state").textContent = c.end
+    ? `Currently ends at frame ${c.end} (${(total - c.end)} frames after it are not used).` : "Currently uses the whole clip.";
+  state();
+  let timer = null, seq = 0;
+  const show = () => {
+    const n = Math.max(1, Math.min(total, Math.round(+num.value || total)));
+    num.value = n;
+    box.querySelector(".when").textContent = `frame ${n} of ${total} · ${(n / fps).toFixed(2)} s` + (n < total ? ` · cuts ${((total - n) / fps).toFixed(2)} s` : "");
+    clearTimeout(timer);
+    timer = setTimeout(async () => {
+      const my = ++seq;
+      box.querySelector(".pic").src = `/media/lineage/${cid}/frame/${n}?h=480`;
+      const fb = box.querySelector(".face");
+      if (!CH.faces?.available) { fb.textContent = ""; return; }
+      fb.textContent = "checking the face…";
+      try {
+        const r = await FK.api(`/api/lineage/clip/${cid}/face/${n}?${scopeQ()}`);
+        if (my !== seq) return;
+        if (!r.reference) fb.textContent = "No original face to compare with in this chain.";
+        else if (!r.faces) fb.innerHTML = `<span class="ln-face" style="position:static;color:var(--dim)">no face found</span> <span class="dim">hidden, turned away or out of frame</span>`;
+        else {
+          const [g, w] = FACE[r.band] || ["", ""];
+          fb.innerHTML = `<span class="ln-face ${r.band}" style="position:static">${g} ${pctF(r.likeness)}</span> <span class="dim">${w}: likeness to the original face</span>`;
+        }
+      } catch (e) { if (my === seq) fb.textContent = e.message; }
+    }, 180);
+  };
+  num.oninput = show;
+  box.querySelectorAll("[data-d]").forEach(b => b.onclick = () => { num.value = +num.value + +b.dataset.d; show(); });
+  num.onkeydown = e => {
+    if (e.key === "ArrowUp" || e.key === "ArrowDown") return;  // the number input nudges by 1 itself
+    if (e.key === "Enter") box.querySelector(".set").click();
+  };
+  box.querySelector(".x").onclick = () => box.remove();
+  const save = async end => {
+    try {
+      await FK.api(`/api/lineage/clip/${cid}/end`, {json: {end}});
+      FK.toast(end ? `${c.label} now ends at frame ${end}.` : `${c.label} uses the whole clip again.`);
+      await openChain(CUR, true);
+    } catch (e) { FK.fail(e); }
+  };
+  box.querySelector(".set").onclick = () => save(+num.value >= total ? null : +num.value);
+  box.querySelector(".whole").onclick = () => save(null);
+  box.querySelector(".exp").onclick = async () => {
+    try {
+      const r = await FK.api(`/api/lineage/clip/${cid}/export?${scopeQ()}`, {json: {frame: +num.value}});
+      FK.toast(`Saved ${r.name}`);
+      box.querySelector(".state").textContent = `Saved ${r.path}`;
+    } catch (e) { FK.fail(e); }
+  };
+  show();
+}
+
 async function setMark(cid, mark) {
   try { await FK.api("/api/lineage/mark", {json: {clip: cid, mark}}); CH.clips[cid].mark = mark; renderTree(); }
   catch (e) { FK.fail(e); }
@@ -370,14 +511,19 @@ function setPath(path) {
   const was = P.playing;
   stop();
   P.clips = path.map((cid, k) => {
-    const c = CH.clips[cid];
-    const skip = k ? 1 / (c.fps || 16) : 0;  // children open on the parent's last frame
-    return {cid, label: c.label, skip, len: Math.max(0.05, c.duration - skip)};
+    const c = CH.clips[cid], fps = c.fps || 16;
+    const skip = k ? 1 / fps : 0;  // children open on the frame their parent ends on
+    const end = (CH.ends || [])[k];  // stop after this frame (null: play to the last frame)
+    return {cid, label: c.label + (end ? ` (to frame ${end})` : ""), skip, fps,
+            len: Math.max(0.05, (end ? end / fps : c.duration) - skip)};
   });
   let t = 0;
   for (const c of P.clips) { c.at = t; t += c.len; }
   P.total = t;
-  $("pathText").textContent = `Your chain: ${P.clips.map(c => c.label).join(" → ")} · ${fmtT(P.total)}` + (CH.picked ? "" : " (automatic: deepest line)");
+  $("pathText").textContent = `Your chain: ${P.clips.map(c => c.label).join(" → ")} · ${fmtT(P.total)}` + (CH.picked ? "" : ` (automatic: deepest line${CH.faces?.checked ? ", take most like the original" : ""})`);
+  const fl = path.map(cid => CH.clips[cid].face);
+  $("facePath").textContent = fl.some(f => f && f.mean != null)
+    ? `Likeness along your chain: ${fl.map(f => f && f.mean != null ? pctF(f.mean) : "–").join(" → ")}` : "";
   const first = CH.clips[path[0]];
   $("stage").style.aspectRatio = `${first.width} / ${first.height}`;
   $("stage").style.maxWidth = first.height > first.width ? "420px" : "";
@@ -413,7 +559,7 @@ function cueNext() {
 }
 function swap() {
   const next = P.i + 1 < P.clips.length ? P.i + 1 : ($("loop").checked ? 0 : null);
-  if (next === null) { P.playing = false; $("playBtn").textContent = "Play"; return; }
+  if (next === null) { P.playing = false; P.done = true; P.act.pause(); $("playBtn").textContent = "Play"; return; }
   if (+P.idle.dataset.i !== next) cue(P.idle, next, 0);
   [P.act, P.idle] = [P.idle, P.act];
   P.i = next;
@@ -426,7 +572,8 @@ function swap() {
 for (const v of [$("vA"), $("vB")]) v.addEventListener("ended", () => { if (v === P.act) swap(); });
 function play() {
   if (!P.clips.length) return;
-  if (P.i === P.clips.length - 1 && P.act.ended) jump(0);
+  if (P.done || (P.i === P.clips.length - 1 && P.act.ended)) jump(0);
+  P.done = false;
   P.playing = true; $("playBtn").textContent = "Pause";
   P.act.play().catch(e => { P.playing = false; $("playBtn").textContent = "Play"; FK.fail(e); });
 }
@@ -435,6 +582,7 @@ $("playBtn").onclick = () => P.playing ? (P.playing = false, P.act.pause(), $("p
 function jump(t) {
   t = Math.max(0, Math.min(P.total - 0.01, t));
   const i = Math.max(0, P.clips.findLastIndex(c => c.at <= t));
+  P.done = false;
   if (i === P.i) { try { P.act.currentTime = P.clips[i].skip + (t - P.clips[i].at); } catch {} return; }
   P.act.pause();
   P.i = i;
@@ -449,6 +597,8 @@ function tick() {
   const c = P.clips[P.i];
   if (c && P.act) {
     const t = c.at + Math.max(0, Math.min(c.len, P.act.currentTime - c.skip));
+    // a clip that ends before its last frame: move on at its end frame, not at the end of the file
+    if (P.playing && P.act.currentTime >= c.skip + c.len - 0.25 / c.fps) swap();
     const head = $("head");
     if (head) head.style.left = `calc(${(t / (P.total || 1)) * 100}% - 1px)`;
     $("time").textContent = `${fmtT(t)} / ${fmtT(P.total)}`;
@@ -463,8 +613,9 @@ document.addEventListener("keydown", e => {
 
 $("publishBtn").onclick = async () => {
   try {
-    const r = await FK.api("/api/lineage/publish", {json: {clips: CH.path}});
+    const r = await FK.api("/api/lineage/publish", {json: {clips: CH.path, ends: CH.ends}});
     sessionStorage.setItem("fk.ids", JSON.stringify(r.ids));
+    sessionStorage.setItem("fk.ends", JSON.stringify(r.ends || []));
     location.href = "/colormatch?sel=1&ordered=1";
   } catch (e) { FK.fail(e); }
 };

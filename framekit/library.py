@@ -29,7 +29,7 @@ def _row(r) -> dict:
 
 
 def _walk(root: str):
-    skip = {config.norm(config.WORK)} - {config.norm(config.UPLOADS)}
+    skip = config.own_dirs()  # never index FrameKit's own output, wherever it lives
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if not d.startswith(".")
                        and config.norm(os.path.join(dirpath, d)) not in skip]

@@ -163,7 +163,10 @@ async function init() {
   if (new URLSearchParams(location.search).get("sel") === "1") {
     let ids = [];
     try { ids = JSON.parse(sessionStorage.getItem("fk.ids") || "[]"); } catch {}
-    SEGS = LIBV.filter(v => ids.includes(v.id));
+    let ends = [];
+    try { ends = JSON.parse(sessionStorage.getItem("fk.ends") || "[]"); } catch {}
+    const endOf = Object.fromEntries(ids.map((id, k) => [id, ends[k] || null]));
+    SEGS = LIBV.filter(v => ids.includes(v.id)).map(v => ({...v, _end: endOf[v.id] || null}));
     // a chain from Lineage arrives in playback order; a library selection is sorted by name
     if (new URLSearchParams(location.search).get("ordered") === "1") SEGS.sort((a, b) => ids.indexOf(a.id) - ids.indexOf(b.id));
     else SEGS.sort(natural);
@@ -189,14 +192,21 @@ function renderSegs() {
     const fv = $("fps").value;  // empty before the options are first built: treat as auto
     const outFps = !fv || fv === "auto" ? commonFps() : +fv;
     const odd = first && ((k > 0 && (i.width !== first.width || i.height !== first.height)) || (outFps && i.fps !== outFps));
+    const nf = i.nb_frames || Math.round((i.duration || 0) * (i.fps || 0));
     d.innerHTML = `<span class="n">${k + 1}</span><span class="grow"></span>
       <span class="dim">${FK.dur(i.duration)} · ${i.width}×${i.height} · ${i.fps} fps</span>
-      <button class="small danger" title="remove">✕</button>`;
+      <label class="dim" title="use the segment only up to this frame (e.g. before the face is hidden at the end); empty = its last frame">ends at frame
+        <input type="number" class="end" min="2" ${nf ? `max="${nf}"` : ""} placeholder="${nf || "last"}" style="width:4.5em"></label>
+      <button class="small danger rm" title="remove">✕</button>`;
     const name = document.createElement("span");
     name.textContent = v.name;
     if (odd) { name.className = "cm-warn"; name.title = "differs in size or frame rate from the output; it will be converted to match"; }
     d.children[1].append(name);
-    d.querySelector("button").onclick = () => { SEGS.splice(k, 1); renderSegs(); };
+    d.querySelector(".rm").onclick = () => { SEGS.splice(k, 1); renderSegs(); };
+    const endIn = d.querySelector(".end");
+    endIn.value = v._end || "";
+    endIn.onchange = () => { v._end = +endIn.value >= 2 && (!nf || +endIn.value < nf) ? Math.round(+endIn.value) : null; endIn.value = v._end || ""; };
+    endIn.onmousedown = e => e.stopPropagation();  // typing in the field shouldn't start a drag
     d.ondragstart = e => { e.dataTransfer.setData("text/plain", String(k)); e.dataTransfer.effectAllowed = "move"; };
     d.ondragover = e => { e.preventDefault(); d.classList.add("drag-over"); };
     d.ondragleave = () => d.classList.remove("drag-over");
@@ -213,7 +223,7 @@ function renderSegs() {
 }
 $("libPick").onchange = () => {
   const v = LIBV.find(x => x.id === $("libPick").value);
-  if (v) { SEGS.push(v); renderSegs(); }
+  if (v) { SEGS.push({...v}); renderSegs(); }
   $("libPick").value = "";
 };
 $("sortBtn").onclick = () => { SEGS.sort(natural); renderSegs(); };
@@ -229,7 +239,7 @@ $("upFile").onchange = async () => {
     const r = await FK.api("/api/library/upload", {method: "POST", body: fd});
     const lib = await FK.api("/api/library");
     LIBV = lib.videos.filter(v => v.info).sort(natural);
-    for (const id of r.ids) { const v = LIBV.find(x => x.id === id); if (v) SEGS.push(v); }
+    for (const id of r.ids) { const v = LIBV.find(x => x.id === id); if (v) SEGS.push({...v}); }
     renderSegs();
   } catch (e) { FK.fail(e); }
   $("upFile").value = "";
@@ -302,8 +312,8 @@ function overlapOverrides() {
 async function analyze(keepSession) {
   if (!SEGS.length) return FK.toast("Add at least one segment.", true);
   if (radio() === "image" && !REF) return FK.toast("Choose the reference image, or use the first frame of segment 1.", true);
-  const sameSegs = S && S.segments.length === SEGS.length && S.segments.every((s, k) => s.id === SEGS[k].id);
-  const body = {ids: SEGS.map(v => v.id), method: $("method").value, mode: $("mode").value,
+  const sameSegs = S && S.segments.length === SEGS.length && S.segments.every((s, k) => s.id === SEGS[k].id && (s.end || null) === (SEGS[k]._end || null));
+  const body = {ids: SEGS.map(v => v.id), ends: SEGS.map(v => v._end || null), method: $("method").value, mode: $("mode").value,
                 fit_frames: +$("fitFrames").value, fps: $("fps").value,
                 luma_strength: +$("lumS").value, color_strength: +$("colS").value,
                 reference: radio() === "image" ? REF : null,
@@ -329,7 +339,7 @@ async function openSession(sid) {
   if (st.reference_token) { document.querySelector("input[value=image]").checked = true; setRef(st.reference_token); }
   else document.querySelector("input[value=first]").checked = true;
   $("refBox").classList.toggle("hidden", radio() !== "image");
-  const segs = S.segments.map(s => LIBV.find(v => v.id === s.id));
+  const segs = S.segments.map(s => { const v = LIBV.find(x => x.id === s.id); return v ? {...v, _end: s.end || null} : null; });
   if (segs.every(Boolean)) { SEGS = segs; renderSegs(); }
   fpsOptions(st.fps && st.fps !== "auto" ? String(+st.fps || st.fps) : "auto");
   syncMode();

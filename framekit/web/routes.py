@@ -857,11 +857,19 @@ def api_colormatch_analyze():
     ref = _ref_path(d.get("reference"))
     fit_frames = _num(d, "fit_frames", int) or 5
     strength = _num(d, "strength")
+    ends = d.get("ends")
+    if ends is not None:
+        try:
+            ends = [None if v in (None, "", 0) else int(v) for v in ends]
+        except (TypeError, ValueError):
+            abort(400, "end frames must be whole numbers")
+        if any(e is not None and e < 2 for e in ends):
+            abort(400, "an end frame must be 2 or more")
     return _job(jobs.submit(
         "colormatch", f"Color match: analyse {len(vids)} segments", colormatch.analyze,
         [v["path"] for v in vids], reference=ref, method=method, fit_frames=fit_frames, mode=mode,
         strength=strength, luma_strength=_num(d, "luma_strength"), color_strength=_num(d, "color_strength"),
-        fps=fps, overlaps=ovl, names=[v["name"] for v in vids], session=sid, ids=ids, ref="colormatch"))
+        fps=fps, ends=ends, overlaps=ovl, names=[v["name"] for v in vids], session=sid, ids=ids, ref="colormatch"))
 
 
 @bp.route("/api/colormatch/<sid>", methods=["GET", "DELETE"])
@@ -943,7 +951,8 @@ def _scope() -> str | None:
 @bp.route("/api/lineage")
 def api_lineage():
     scope = _scope()
-    return jsonify(folders=lineage.folders(), scope=scope, chains=_lin(lineage.chains, scope),
+    return jsonify(folders=lineage.folders(), env_folders=lineage.env_folders(), scope=scope,
+                   chains=_lin(lineage.chains, scope),
                    backends=features.backends(),
                    active=[j for j in jobs.active_for("lineage")])
 
@@ -955,7 +964,7 @@ def api_lineage_folders():
     if not path:
         abort(400, "a folder path is needed")
     if d.get("action") == "remove":
-        return jsonify(folders=lineage.remove_folder(path))
+        return jsonify(folders=_lin(lineage.remove_folder, path))
     return jsonify(folders=_lin(lineage.add_folder, path))
 
 
@@ -1007,6 +1016,53 @@ def api_lineage_link():
     return jsonify(ok=True)
 
 
+@bp.route("/api/lineage/faces", methods=["POST"])
+def api_lineage_faces():
+    """Find faces for one chain (number) or every chain in the view, then score them."""
+    from .. import faces
+    if not faces.available():
+        abort(400, "face checks need insightface: see requirements-faces.txt")
+    d = _body()
+    number = _num(d, "chain", int)
+    if jobs.active_for("lineage-faces"):
+        abort(409, "a face check is already running")
+    label = f"Lineage: faces in c{number:03d}" if number is not None else "Lineage: faces in every chain"
+    return _job(jobs.submit("lineage", label, lineage.check_faces, number=number, scope=_scope(),
+                            redo=bool(d.get("redo")), ref="lineage-faces"))
+
+
+@bp.route("/api/lineage/clip/<int:cid>/end", methods=["POST"])
+def api_lineage_end(cid):
+    """Set where a take ends (frame number, 1 = first); empty = its last frame again."""
+    return jsonify(_lin(lineage.set_end, cid, _num(_body(), "end", int)))
+
+
+@bp.route("/api/lineage/clip/<int:cid>/face/<int:n>")
+def api_lineage_frame_face(cid, n):
+    return jsonify(_lin(lineage.frame_face, cid, n, _scope()))
+
+
+@bp.route("/api/lineage/clip/<int:cid>/export", methods=["POST"])
+def api_lineage_export(cid):
+    """Save one frame as a full-size PNG handoff (for Qwen or the next generation)."""
+    n = _num(_body(), "frame", int)
+    if not n:
+        abort(400, "which frame?")
+    p = _lin(lineage.export_frame, cid, n, _scope())
+    return jsonify(path=p, name=os.path.basename(p))
+
+
+@bp.route("/media/lineage/<int:cid>/frame/<int:n>")
+def media_lineage_frame(cid, n):
+    from io import BytesIO
+    from PIL import Image
+    h = _num(request.args, "h", int) or 480
+    img = _lin(lineage.grab, cid, n, max(120, min(h, 2160)))
+    buf = BytesIO()
+    Image.fromarray(img).save(buf, "JPEG", quality=88)
+    return Response(buf.getvalue(), mimetype="image/jpeg", headers={"Cache-Control": "max-age=3600"})
+
+
 @bp.route("/api/lineage/suggest/<int:cid>")
 def api_lineage_suggest(cid):
     return jsonify(_lin(lineage.suggest, cid, _scope(), request.args.get("backend", "clip")))
@@ -1016,6 +1072,7 @@ def api_lineage_suggest(cid):
 def api_lineage_publish():
     """Put a chain's clips in the library (in place, under their folder) for Color match."""
     ids = []
+    ends = _body().get("ends") or []
     for cid in _body().get("clips") or []:
         c = _lin(lineage.clip, int(cid))
         if not os.path.exists(c["path"]):
@@ -1023,7 +1080,7 @@ def api_lineage_publish():
         ids.append(library.add_path(c["path"], root=c["folder"])["id"])
     if not ids:
         abort(400, "no clips selected")
-    return jsonify(ids=ids)
+    return jsonify(ids=ids, ends=[e if isinstance(e, int) and e > 0 else None for e in ends][:len(ids)])
 
 
 @bp.route("/media/lineage/<int:cid>/<which>")

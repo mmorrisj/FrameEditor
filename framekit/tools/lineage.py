@@ -20,6 +20,8 @@ pose as takes). A view can span every saved folder or just one.
 """
 from __future__ import annotations
 
+import io
+import json
 import os
 import subprocess
 import threading
@@ -54,6 +56,10 @@ CREATE TABLE IF NOT EXISTS lineage_overrides (
 CREATE TABLE IF NOT EXISTS lineage_chains (root_key INTEGER PRIMARY KEY, number INTEGER UNIQUE);
 CREATE TABLE IF NOT EXISTS lineage_picks (root_key INTEGER PRIMARY KEY, tip INTEGER);
 CREATE TABLE IF NOT EXISTS lineage_marks (clip_id INTEGER PRIMARY KEY, mark TEXT);
+CREATE TABLE IF NOT EXISTS lineage_trims (clip_id INTEGER PRIMARY KEY, end_frame INTEGER, sig BLOB);
+CREATE TABLE IF NOT EXISTS lineage_branches (
+    clip_id INTEGER, frame INTEGER, sig BLOB, PRIMARY KEY (clip_id, frame)
+);
 """
 _schema_ok: set[str] = set()
 _lock = threading.Lock()
@@ -86,27 +92,43 @@ def thumb_path(cid: int, which: str) -> str:
 
 # ==== folders ======================================================================================
 
-def folders() -> list[str]:
+def env_folders() -> list[str]:
+    """Folders from $FRAMEKIT_LINEAGE_DIRS (or .env): always indexed, not removable here."""
+    return config.env_paths("FRAMEKIT_LINEAGE_DIRS")
+
+
+def _saved() -> list[str]:
     return list(config.settings("lineage").get("folders") or [])
+
+
+def folders() -> list[str]:
+    """Every lineage folder: those from the environment first, then the saved ones."""
+    out, seen = [], set()
+    for f in env_folders() + _saved():
+        if config.norm(f) not in seen:
+            seen.add(config.norm(f))
+            out.append(os.path.abspath(f))
+    return out
 
 
 def add_folder(path: str) -> list[str]:
     path = os.path.abspath(path.strip().strip('"'))
     if not os.path.isdir(path):
         raise ValueError(f"no such folder: {path}")
-    fs = folders()
-    if not any(config.norm(f) == config.norm(path) for f in fs):
+    fs = _saved()
+    if not any(config.norm(f) == config.norm(path) for f in folders()):
         fs.append(path)
         config.save_settings("lineage", {"folders": fs})
     _bump()
-    return fs
+    return folders()
 
 
 def remove_folder(path: str) -> list[str]:
-    fs = [f for f in folders() if config.norm(f) != config.norm(path)]
-    config.save_settings("lineage", {"folders": fs})
+    if any(config.norm(f) == config.norm(path) for f in env_folders()):
+        raise ValueError("this folder comes from FRAMEKIT_LINEAGE_DIRS; remove it from .env or the environment")
+    config.save_settings("lineage", {"folders": [f for f in _saved() if config.norm(f) != config.norm(path)]})
     _bump()
-    return fs
+    return folders()
 
 
 def _videos_in(folder: str) -> list[str]:
@@ -246,7 +268,7 @@ def scan(job=None, only: list[str] | None = None) -> dict:
 
 class Group:
     __slots__ = ("takes", "dups", "parent", "link", "alts", "suggestion", "children", "chain",
-                 "generation", "label", "up")
+                 "generation", "label", "up", "branch")
 
     def __init__(self, takes):
         self.takes = takes          # clip ids, arrival order
@@ -260,6 +282,7 @@ class Group:
         self.generation = 1
         self.label = ""
         self.up = None              # parent Group
+        self.branch = None          # parent's frame number this step starts from (None: its last frame)
 
     @property
     def key(self):
@@ -308,6 +331,14 @@ def _build(clips: list[dict]) -> dict:
     first_eq = (F @ F.T / d > MATCH) & same_res
     last_eq = (L @ L.T / d > MATCH) & same_res
     FL = F @ L.T / d            # FL[i, j]: first frame of i vs last frame of j
+    with _db() as c:
+        br = {(r["clip_id"], r["frame"]): r["sig"] for r in c.execute("SELECT * FROM lineage_branches")}
+        for r in c.execute("SELECT clip_id, end_frame, sig FROM lineage_trims WHERE sig IS NOT NULL"):
+            br.setdefault((r["clip_id"], r["end_frame"]), r["sig"])
+    br = [(cid, fr, sig) for (cid, fr), sig in br.items() if cid in pos]
+    tj = [pos[cid] for cid, _, _ in br]
+    FT = (F @ np.stack([np.frombuffer(sig, np.float32) for _, _, sig in br]).T / d
+          if br else np.zeros((n, 0), np.float32))   # FT[i, k]: first frame of i vs branch frame k
 
     # duplicates: same first frame, last frame and length -> one clip saved twice
     dup = first_eq & last_eq & (frames[:, None] == frames[None, :])
@@ -363,13 +394,16 @@ def _build(clips: list[dict]) -> dict:
         if g in forced and forced[g] not in own:
             g.parent, g.link = ids[forced[g]], "manual"
             continue
-        hits = [j for j in np.nonzero(FL[rep] > MATCH)[0]
-                if canon[j] == j and j not in own and (g, j) not in unlinked]
-        if hits:  # same resolution first, then the best score, then the oldest
-            hits.sort(key=lambda j: (not same_res[rep, j], -FL[rep, j], j))
-            g.parent = ids[hits[0]]
-            g.link = "exact" if same_res[rep, hits[0]] else "probable"
-            g.alts = [ids[j] for j in hits[1:]]
+        # candidates: (clip, score, frame it branches from: None = its last frame)
+        cand = [(j, FL[rep, j], None) for j in np.nonzero(FL[rep] > MATCH)[0]]
+        cand += [(tj[k], FT[rep, k], br[k][1]) for k in np.nonzero(FT[rep] > MATCH)[0]]
+        cand = [x for x in cand if canon[x[0]] == x[0] and x[0] not in own and (g, x[0]) not in unlinked]
+        if cand:  # same resolution first, then the best score, then the oldest
+            cand.sort(key=lambda x: (not same_res[rep, x[0]], -x[1], x[0]))
+            j, _, frame = cand[0]
+            g.parent, g.branch = ids[j], frame
+            g.link = "exact" if same_res[rep, j] else "probable"
+            g.alts = list(dict.fromkeys(ids[x[0]] for x in cand[1:] if x[0] != j))
 
     # break cycles at the step that appeared first
     for g in groups:
@@ -458,12 +492,16 @@ def _marks() -> dict[int, str]:
         return {r["clip_id"]: r["mark"] for r in c.execute("SELECT * FROM lineage_marks")}
 
 
-def default_tip(f: dict, root: Group, marks: dict) -> int:
-    """Follow the continued takes down the deepest branch; end on the newest take not rejected."""
+def default_tip(f: dict, root: Group, marks: dict, likeness: dict | None = None) -> int:
+    """Follow the continued takes down the deepest branch; end on the take not rejected that is
+    most like the original face (when faces have been checked), else the newest."""
     g = root
     while g.children:
         g = max(g.children, key=lambda c: (_depth(c), c.takes[0]))
     ok = [t for t in g.takes if marks.get(t) != "reject"] or g.takes
+    scored = [t for t in ok if (likeness or {}).get(t, {}).get("mean") is not None]
+    if scored:
+        return max(scored, key=lambda t: (likeness[t]["mean"], t))
     return ok[-1]
 
 
@@ -494,6 +532,7 @@ def _clip_public(f: dict, cid: int, marks: dict) -> dict:
     return {"id": cid, "name": c["name"], "label": f["labels"].get(cid), "width": c["width"],
             "height": c["height"], "frames": c["frames"], "fps": c["fps"], "duration": c["duration"],
             "has_audio": bool(c["has_audio"]), "mark": marks.get(cid), "continued": cid in f["winners"],
+            "end": _trims().get(cid),
             "mtime": c["mtime_ns"] / 1e9}
 
 
@@ -515,19 +554,31 @@ def chain(number: int, scope: str | None = None) -> dict:
             sid, score = g.suggestion
             sug = {"clip": sid, "label": f["labels"].get(sid), "name": f["clips"][sid]["name"], "score": round(score, 3)}
         steps.append({"label": g.label, "generation": g.generation, "takes": g.takes,
-                      "dups": [d for d, _ in g.dups], "parent": g.parent, "link": g.link,
+                      "dups": [d for d, _ in g.dups], "parent": g.parent, "link": g.link, "branch": g.branch,
                       "alternates": [{"clip": a, "label": f["labels"].get(a)} for a in g.alts],
                       "suggestion": sug, "children": [c.label for c in g.children],
                       "up": g.up.label if g.up else None})
+    from .. import faces
+    face = {"available": faces.available(), "ref": None, "checked": 0, "total": len(clips),
+            "on": faces.ON_MODEL, "drift": faces.DRIFTING}
+    scores = {}
+    if face["available"]:
+        face["ref"], scores = face_scores(f, root)
+        face["checked"] = len(scores)
+        for cid, sc in scores.items():
+            if cid in clips:
+                clips[cid]["face"] = sc
     with _db() as c:
         row = c.execute("SELECT tip FROM lineage_picks WHERE root_key=?", (root.key,)).fetchone()
     tip, picked = None, False
     if row and row["tip"] in f["group_of"] and f["group_of"][row["tip"]].chain == root.chain:
         tip, picked = row["tip"], True
     if tip is None:
-        tip = default_tip(f, root, marks)
+        tip = default_tip(f, root, marks, scores)
+    path = path_to(f, tip)
     return {"number": root.chain, "label": f"c{root.chain:03d}", "key": root.key, "depth": _depth(root),
-            "steps": steps, "clips": clips, "path": path_to(f, tip), "picked": picked}
+            "steps": steps, "clips": clips, "path": path, "ends": path_ends(f, path), "picked": picked,
+            "faces": face}
 
 
 def pick(number: int, tip: int | None, scope: str | None = None) -> dict:
@@ -573,6 +624,101 @@ def override(child: int, parent: int | None, kind: str) -> None:
         else:
             raise ValueError("kind must be link, unlink or reset")
     _bump()
+
+
+# ==== end frames ====================================================================================
+# A take can end before its last frame, e.g. when the face is hidden at the very end and the next
+# segment should start from an earlier, clear frame. The file is never changed: the end frame is
+# stored here, and a child generated from that frame links back to it automatically.
+
+def _trims() -> dict[int, int]:
+    with _db() as c:
+        return {r["clip_id"]: r["end_frame"] for r in c.execute("SELECT clip_id, end_frame FROM lineage_trims")}
+
+
+def path_ends(f: dict, path: list[int]) -> list[int | None]:
+    """Where each clip of a playback path ends (frame number, None = its last frame): the frame the
+    next clip starts from, and for the final clip its own end frame."""
+    ends = []
+    for k, cid in enumerate(path):
+        if k + 1 < len(path):
+            ends.append(f["group_of"][path[k + 1]].branch)
+        else:
+            ends.append(_trims().get(cid))
+    return ends
+
+
+def grab(cid: int, n: int, height: int | None = None) -> np.ndarray:
+    """Frame number n (1 = first) of a clip, exactly, colour-exact RGB (optionally scaled to `height`)."""
+    c = clip(cid)
+    n = int(n)
+    if n < 1:
+        raise ValueError("frame numbers start at 1")
+    info = media.probe(c["path"])
+    w, h = info["width"], info["height"]
+    if height and height < h:
+        w, h = max(2, int(round(w * height / h / 2)) * 2), height - height % 2
+    vf = (f"select=eq(n\\,{n - 1}),scale={w}:{h}:{color_in(info)}:flags=lanczos+accurate_rnd+full_chroma_int,"
+          f"format=rgb24")
+    proc = subprocess.run(["ffmpeg", "-v", "error", "-i", c["path"], "-an", "-vf", vf, "-frames:v", "1",
+                           *media.vfr_args(), "-f", "rawvideo", "-"], capture_output=True, **_NOWIN)
+    if len(proc.stdout) < w * h * 3:
+        raise ValueError(f"frame {n} is past the end of this clip ({c['frames']} frames)")
+    return np.frombuffer(proc.stdout[:w * h * 3], np.uint8).reshape(h, w, 3)
+
+
+def set_end(cid: int, end: int | None) -> dict:
+    """End a take at frame `end` (None: its last frame again)."""
+    c = clip(cid)
+    with _db() as db_:
+        if end is None or int(end) >= c["frames"]:
+            db_.execute("DELETE FROM lineage_trims WHERE clip_id=?", (int(cid),))
+            end = None
+        else:
+            sig = signature(grab(cid, int(end), THUMB_H)).tobytes()  # also proves the frame exists
+            db_.execute("INSERT OR REPLACE INTO lineage_trims VALUES (?, ?, ?)", (int(cid), int(end), sig))
+            db_.execute("INSERT OR REPLACE INTO lineage_branches VALUES (?, ?, ?)", (int(cid), int(end), sig))
+    _bump()
+    return {"clip": int(cid), "end": end, "frames": c["frames"]}
+
+
+def handoff_dir() -> str:
+    return config.env_path("FRAMEKIT_HANDOFF_DIR", os.path.join(config.WORK, "lineage", "handoff"))
+
+
+def export_frame(cid: int, n: int, scope: str | None = None) -> str:
+    """Save frame n full size as a colour-exact PNG named after the take, for the next generation."""
+    img = grab(cid, n)
+    with _db() as db_:  # remember it: a clip generated from this frame will link back here
+        sig = signature(np.asarray(Image.fromarray(img).resize(
+            (max(2, int(round(img.shape[1] * THUMB_H / img.shape[0]))), THUMB_H), Image.BOX))).tobytes()
+        db_.execute("INSERT OR REPLACE INTO lineage_branches VALUES (?, ?, ?)", (int(cid), int(n), sig))
+    _bump()
+    label = forest(scope)["labels"].get(int(cid)) or os.path.splitext(clip(cid)["name"])[0]
+    os.makedirs(handoff_dir(), exist_ok=True)
+    out = os.path.join(handoff_dir(), f"{label}_frame{int(n):04d}.png")
+    Image.fromarray(img).save(out)
+    return out
+
+
+def frame_face(cid: int, n: int, scope: str | None = None) -> dict:
+    """Face in frame n compared with the chain's original face (for the end-frame editor)."""
+    from .. import faces
+    if not faces.available():
+        return {"available": False}
+    f = forest(scope)
+    cid = f["dup_of"].get(int(cid), int(cid))
+    g = f["group_of"].get(cid)
+    if g is None:
+        raise LookupError("unknown clip")
+    root = g
+    while root.up is not None:
+        root = root.up
+    _, ref = _reference_face(f, root)
+    found = faces.detect(grab(cid, n))
+    score = faces.likeness(ref, [x["emb"] for x in found]) if ref is not None else None
+    return {"available": True, "faces": len(found), "likeness": None if score is None else round(score, 3),
+            "band": faces.band(score), "reference": ref is not None}
 
 
 def resolve(text: str, scope: str | None = None) -> int | None:
@@ -627,6 +773,146 @@ def suggest(cid: int, scope: str | None = None, backend: str = "clip", top: int 
              "score": round(float(sims[i]), 3), "backend": backend} for i in order]
 
 
+# ==== face identity =================================================================================
+# Each clip's faces are read from a few frames (first and last included) and cached per clip
+# version. A chain's reference is the face in its original start frame, so every take is scored
+# against the character the chain began with.
+
+FACE_SAMPLES = 6
+
+
+def _sample_frames(path: str, frames: int) -> list[tuple[int, np.ndarray]]:
+    """(frame index, RGB image) for FACE_SAMPLES evenly spaced frames, in one decode pass."""
+    info = media.probe(path)
+    n = max(1, frames or int(round((info.get("duration") or 0) * (info.get("fps") or 0))) or 1)
+    idx = sorted({int(round(k * (n - 1) / max(1, FACE_SAMPLES - 1))) for k in range(FACE_SAMPLES)})
+    w, h = info["width"], info["height"]
+    if max(w, h) > 1280:  # plenty for detection; keeps the pass fast
+        s = 1280 / max(w, h)
+        w, h = int(w * s) // 2 * 2, int(h * s) // 2 * 2
+    sel = "+".join(f"eq(n\\,{i})" for i in idx)
+    vf = f"select='{sel}',scale={w}:{h}:{color_in(info)}:flags=area+accurate_rnd+full_chroma_int,format=rgb24"
+    proc = subprocess.run(["ffmpeg", "-v", "error", "-i", path, "-an", "-vf", vf, *media.vfr_args(),
+                           "-f", "rawvideo", "-"], capture_output=True, **_NOWIN)
+    size = w * h * 3
+    got = [np.frombuffer(proc.stdout[k * size:(k + 1) * size], np.uint8).reshape(h, w, 3)
+           for k in range(len(proc.stdout) // size)]
+    out = list(zip(idx, got))
+    if len(got) < len(idx):  # the frame count was an estimate: make sure the true last frame is in
+        vf = f"scale={w}:{h}:{color_in(info)}:flags=area+accurate_rnd+full_chroma_int,format=rgb24"
+        tail = subprocess.run(["ffmpeg", "-v", "error", "-sseof", "-1.5", "-i", path, "-an", "-vf", vf,
+                               "-f", "rawvideo", "-"], capture_output=True, **_NOWIN).stdout
+        if len(tail) >= size:
+            k = len(tail) // size - 1
+            out.append((idx[-1], np.frombuffer(tail[k * size:(k + 1) * size], np.uint8).reshape(h, w, 3)))
+    return out
+
+
+def _face_key(c: dict) -> str:
+    return f"{c['size']}:{c['mtime_ns']}:{FACE_SAMPLES}"
+
+
+def face_data(c: dict) -> list[dict] | None:
+    """Cached faces for a clip row: [{i, faces: [{box, score, emb}]}], or None if not checked."""
+    from ..db import cache_get
+    raw = cache_get(f"lineage:{c['id']}", "faces", _face_key(c))
+    if raw is None:
+        return None
+    with np.load(io.BytesIO(raw)) as z:
+        meta, emb = json.loads(str(z["meta"])), z["emb"].astype(np.float32)
+    for s in meta:
+        for f in s["faces"]:
+            f["emb"] = emb[f.pop("k")]
+    return meta
+
+
+def _store_faces(c: dict, samples: list[dict]) -> None:
+    from ..db import cache_put
+    embs, meta = [], []
+    for s in samples:
+        faces = []
+        for f in s["faces"]:
+            faces.append({"box": f["box"], "score": f["score"], "k": len(embs)})
+            embs.append(f["emb"])
+        meta.append({"i": s["i"], "faces": faces})
+    buf = io.BytesIO()
+    np.savez_compressed(buf, meta=json.dumps(meta), emb=np.stack(embs).astype(np.float16) if embs
+                        else np.zeros((0, 512), np.float16))
+    cache_put(f"lineage:{c['id']}", "faces", _face_key(c), buf.getvalue())
+
+
+def check_faces(job, number: int | None = None, scope: str | None = None, redo: bool = False) -> dict:
+    """Find and embed faces for every clip of one chain (or every chain in the view)."""
+    from .. import faces
+    f = forest(scope)
+    roots = [_root_of(f, number)] if number is not None else f["roots"]
+    cids = [t for r in roots for g in _walk(r) for t in g.takes]
+    todo = [f["clips"][t] for t in cids if redo or face_data(f["clips"][t]) is None]
+    if job:
+        job.update(message="loading the face models", progress=0, total=len(todo))
+    if todo:
+        faces._App.get()
+    done, with_face = 0, 0
+    with ThreadPoolExecutor(max_workers=3) as pool:  # decoding overlaps detection on the GPU
+        futs = [(c, pool.submit(_sample_frames, c["path"], c["frames"])) for c in todo]
+        for c, fut in futs:
+            if job:
+                job.check()
+                job.update(message="finding faces", progress=done)
+            try:
+                frames = fut.result()
+            except Exception:
+                frames = []
+            samples = [{"i": i, "faces": faces.detect(img)} for i, img in frames]
+            _store_faces(c, samples)
+            with_face += any(s["faces"] for s in samples)
+            done += 1
+    if job:
+        job.update(progress=done)
+    return {"checked": done, "with_faces": with_face, "clips": len(cids)}
+
+
+def _reference_face(f: dict, root: "Group") -> tuple[int | None, np.ndarray | None]:
+    """The chain's original face: the largest face in its start frame (first take that has one)."""
+    for t in root.takes:
+        d = face_data(f["clips"][t])
+        if d:
+            first = min(d, key=lambda s: s["i"])
+            if first["faces"]:
+                return t, first["faces"][0]["emb"]
+    for t in root.takes:  # no face at the very start: the earliest one in the first step
+        d = face_data(f["clips"][t])
+        for s in sorted(d or [], key=lambda s: s["i"]):
+            if s["faces"]:
+                return t, s["faces"][0]["emb"]
+    return None, None
+
+
+def face_scores(f: dict, root: "Group") -> tuple[int | None, dict]:
+    """Likeness of every clip in the chain to the chain's original face.
+    {clip id: {mean, min, first, last, n, samples, band}} for clips that have been checked."""
+    from .. import faces
+    ref_clip, ref = _reference_face(f, root)
+    out = {}
+    for g in _walk(root):
+        for t in g.takes:
+            d = face_data(f["clips"][t])
+            if d is None:
+                continue
+            end = _trims().get(t)
+            if end:
+                d = [s for s in d if s["i"] < end] or d[:1]
+            per = [(s["i"], faces.likeness(ref, [x["emb"] for x in s["faces"]])) for s in sorted(d, key=lambda s: s["i"])]
+            vals = [v for _, v in per if v is not None]
+            r = lambda v: None if v is None else round(v, 3)  # noqa: E731
+            mean = float(np.mean(vals)) if vals else None
+            out[t] = {"mean": r(mean), "min": r(min(vals)) if vals else None, "first": r(per[0][1]) if per else None,
+                      "last": r(per[-1][1]) if per else None, "n": len(vals), "samples": len(per),
+                      "band": faces.band(min(mean, per[-1][1]) if mean is not None and per[-1][1] is not None
+                                         else mean)}
+    return ref_clip, out
+
+
 def _embeddings(items: list[tuple[int, str]], backend: str, f: dict) -> np.ndarray:
     """Unit-length embeddings of clip thumbnails, cached per clip version in the feature cache."""
     from .. import features
@@ -655,25 +941,28 @@ def _embeddings(items: list[tuple[int, str]], backend: str, f: dict) -> np.ndarr
     return np.stack(out)
 
 
-def tree_lines(scope: str | None = None, number: int | None = None) -> list[str]:
-    """Terminal view of the chains."""
+def tree_lines(scope: str | None = None, number: int | None = None, with_faces: bool = False) -> list[str]:
+    """Terminal view of the chains; with_faces adds each take's likeness to the original face (0-100)."""
     f = forest(scope)
     lines = []
     for root in f["roots"]:
         if number is not None and root.chain != number:
             continue
         gs = _walk(root)
+        scores = face_scores(f, root)[1] if with_faces else {}
+        like = lambda t: f"({scores[t]['mean'] * 100:.0f})" if scores.get(t, {}).get("mean") is not None else ""  # noqa: E731
         lines.append(f"c{root.chain:03d}  {_depth(root)} generation(s), {sum(len(g.takes) for g in gs)} take(s)")
         todo = [(root, 1)]
         while todo:
             g, ind = todo.pop()
-            marks = " ".join(f"t{n}{'*' if t in f['winners'] else ''}" for n, t in enumerate(g.takes, 1))
+            marks = " ".join(f"t{n}{'*' if t in f['winners'] else ''}{like(t)}" for n, t in enumerate(g.takes, 1))
             if g.parent is None:
                 note = "new chain"
                 if g.suggestion:
                     note += f" (maybe from {f['labels'][g.suggestion[0]]}, score {g.suggestion[1]:.3f})"
             else:
-                note = f"from {f['labels'][g.parent]}" + (f" [{g.link}]" if g.link != "exact" else "")
+                note = f"from {f['labels'][g.parent]}" + (f" frame {g.branch}" if g.branch else "") \
+                    + (f" [{g.link}]" if g.link != "exact" else "")
             dups = f" (+{len(g.dups)} dup)" if g.dups else ""
             lines.append(f"{'  ' * ind}{g.label}  [{marks}]{dups}  {note}")
             todo.extend((ch, ind + 1) for ch in reversed(g.children))

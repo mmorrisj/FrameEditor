@@ -311,6 +311,9 @@ def cmd_colormatch(a):
         segs += sorted(_video_files([t]), key=_natural) if os.path.isdir(t) else _video_files([t])
     if not segs:
         sys.exit("no segment videos found")
+    ends = None
+    if a.ends:
+        ends = [None if v.strip().lower() in ("", "auto", "last", "full") else int(v) for v in a.ends.split(",")]
     overlaps = None
     if a.overlap:
         vals = [None if v.strip() in ("", "auto") else int(v) for v in a.overlap.split(",")]
@@ -320,7 +323,7 @@ def cmd_colormatch(a):
         _p(f"  {k:3d}  {s}")
     r = jobs.run_sync(cm.analyze, segs, reference=a.reference, method=a.method, fit_frames=a.fit_frames,
                       mode=a.mode, strength=a.strength, luma_strength=a.brightness_strength,
-                      color_strength=a.color_strength, fps=a.fps, overlaps=overlaps, label="analysing")
+                      color_strength=a.color_strength, fps=a.fps, ends=ends, overlaps=overlaps, label="analysing")
     s = cm.load(r["session"])
     for w in s["warnings"]:
         _p(f"warning: {w}")
@@ -396,6 +399,27 @@ def cmd_lineage(a):
         f = ln.forest(scope)
         _p(f"{len(f['roots'])} chain(s), {len(f['groups'])} step(s), {len(f['dup_of'])} duplicate(s)")
         return
+    if a.action in ("end", "export"):
+        if len(a.args) != 2:
+            sys.exit(f"usage: lineage {a.action} CLIP FRAME" + (" (or 'full')" if a.action == "end" else ""))
+        cid = ln.resolve(a.args[0], scope)
+        if cid is None:
+            sys.exit(f"nothing matches {a.args[0]!r}; use a label like c007_g03_t2 or a file name")
+        if a.action == "export":
+            _p(f"saved {ln.export_frame(cid, int(a.args[1]), scope)}")
+            return
+        end = None if a.args[1].lower() in ("full", "last", "none") else int(a.args[1])
+        r = ln.set_end(cid, end)
+        _p(f"{ln.forest(scope)['labels'].get(cid)}: " + (f"ends at frame {r['end']} of {r['frames']}" if r["end"]
+                                                          else f"uses the whole clip ({r['frames']} frames)"))
+        return
+    if a.action == "faces":
+        number = int(a.args[0].lower().lstrip("c")) if a.args else None
+        r = jobs.run_sync(ln.check_faces, number=number, scope=scope, label="finding faces")
+        _p(f"{r['checked']} clip(s) checked, {r['with_faces']} with faces; likeness to each chain's "
+           f"original face in brackets (55+ on model, 40-55 drifting, below 40 off model):")
+        _p("\n".join(ln.tree_lines(scope, number, with_faces=True)))
+        return
     if a.action == "tree":
         number = None
         if a.args:
@@ -403,7 +427,7 @@ def cmd_lineage(a):
             if not t.isdigit():
                 sys.exit("give a chain number, e.g. c007 or 7")
             number = int(t)
-        _p("\n".join(ln.tree_lines(scope, number)) or "no chains (index a folder first)")
+        _p("\n".join(ln.tree_lines(scope, number, with_faces=a.faces)) or "no chains (index a folder first)")
         return
     if a.action in ("link", "unlink", "reset"):
         need = 1 if a.action == "reset" else 2
@@ -421,6 +445,17 @@ def cmd_lineage(a):
         _p("\n".join(ln.tree_lines(scope, g.chain)))
         return
     sys.exit(f"unknown action {a.action}")
+
+
+def cmd_dirs(a):
+    """Show where everything lives, after .env and environment variables are applied."""
+    for k, v in config.directories().items():
+        if isinstance(v, list):
+            _p(f"{k}: {'; '.join(v) if v else '(none)'}")
+        else:
+            _p(f"{k}: {v}")
+    env = os.environ.get("FRAMEKIT_ENV") or os.path.join(config.REPO, ".env")
+    _p(f".env: {env} ({'found' if os.path.isfile(env) else 'not found'})")
 
 
 def cmd_serve(a):
@@ -447,11 +482,16 @@ def main(argv=None):
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     s = sub.add_parser("serve", help="run the web app")
-    s.add_argument("--host", default="127.0.0.1",
-                   help="use 0.0.0.0 to allow other machines on your network (there is no login)")
-    s.add_argument("--port", type=int, default=8082)
+    s.add_argument("--host", default=os.environ.get("FRAMEKIT_HOST") or "127.0.0.1",
+                   help="use 0.0.0.0 to allow other machines on your network (there is no login); "
+                        "default $FRAMEKIT_HOST or 127.0.0.1")
+    s.add_argument("--port", type=int, default=int(os.environ.get("FRAMEKIT_PORT") or 8082),
+                   help="default $FRAMEKIT_PORT or 8082")
     s.add_argument("--log", help="append all output to this file (for running in the background)")
     s.set_defaults(fn=cmd_serve)
+
+    s = sub.add_parser("dirs", help="show every configured directory (after .env and environment variables)")
+    s.set_defaults(fn=cmd_dirs)
 
     s = sub.add_parser("roots", help="list, add or remove library folders")
     s.add_argument("action", nargs="?", choices=["list", "add", "remove"], default="list")
@@ -533,6 +573,8 @@ def main(argv=None):
                         "original: match every segment to the reference")
     s.add_argument("--fit-frames", type=int, default=5, help="frames used to fit each transform (default 5)")
     s.add_argument("--strength", type=float, default=1.0, help="0-1, how much of the correction to apply")
+    s.add_argument("--ends", help="frame each segment ends at, comma separated, 'last' for the whole clip "
+                                  "(e.g. last,58,last)")
     s.add_argument("--overlap", help="repeated frames per join, comma separated, 'auto' to detect (e.g. 1,1,auto)")
     s.add_argument("--crossfade", type=int, default=0, help="blend this many frames at each join (0-12)")
     s.add_argument("--lossless", action="store_true", help="write a lossless FFV1 .mkv instead of H.264 .mp4")
@@ -554,10 +596,13 @@ def main(argv=None):
 
     s = sub.add_parser("lineage", help="rebuild parent/child chains of AI clips from first and last frames",
                        description="actions: folders | add FOLDER... | remove FOLDER... | scan [FOLDER...] | "
-                                   "tree [CHAIN] | link CHILD PARENT | unlink CHILD PARENT | reset CHILD")
-    s.add_argument("action", choices=["folders", "add", "remove", "scan", "tree", "link", "unlink", "reset"])
+                                   "tree [CHAIN] | faces [CHAIN] | link CHILD PARENT | unlink CHILD PARENT | reset CHILD | "
+                                   "end CLIP FRAME|full | export CLIP FRAME")
+    s.add_argument("action", choices=["folders", "add", "remove", "scan", "tree", "faces", "link", "unlink", "reset",
+                                      "end", "export"])
     s.add_argument("args", nargs="*", help="folders, a chain (c007), or clip labels / file names")
     s.add_argument("--folder", help="work within just this folder instead of every saved one")
+    s.add_argument("--faces", action="store_true", help="tree: show each take's likeness to the original face")
     s.set_defaults(fn=cmd_lineage)
 
     s = sub.add_parser("dupes", help="find duplicate videos (dry run unless --apply)")
