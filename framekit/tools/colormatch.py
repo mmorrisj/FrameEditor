@@ -696,7 +696,7 @@ def render(job, sid: str, lossless: bool = False, crossfade: int = 0, keep_frame
     if not keep_frames:
         shutil.rmtree(frames_dir, ignore_errors=True)
     s = load(sid)
-    s["outputs"] = {"joined": joined, "frames": out_n, "clips": clips, "lossless": lossless,
+    s["outputs"] = {"joined": joined, "frames": out_n, "clips": clips, "lossless": lossless, "ranges": ranges,
                     "crossfade": crossfade, "kept_frames": keep_frames,
                     "handoff": sorted(os.listdir(handoff_dir)), "rendered": time.time()}
     _save(s)

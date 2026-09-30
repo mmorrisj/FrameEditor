@@ -8,8 +8,8 @@ from flask import Blueprint, Response, abort, jsonify, render_template, request,
 from werkzeug.utils import secure_filename
 
 from .. import config, features, fileops, jobs, library, media, samples
-from ..tools import (analysis, audio, colormatch, dupes, frames, grouping, lineage, resize, reverse, scenes,
-                     unique)
+from ..tools import (analysis, audio, colormatch, dupes, frames, grouping, lineage, mix, resize, reverse,
+                     scenes, sounds, unique)
 
 bp = Blueprint("suite", __name__)
 
@@ -83,6 +83,16 @@ def page_groups():
 @bp.route("/unique")
 def page_unique():
     return render_template("unique.html", page="unique")
+
+
+@bp.route("/mix")
+def page_mix():
+    return render_template("mix.html", page="mix")
+
+
+@bp.route("/sounds")
+def page_sounds():
+    return render_template("sounds.html", page="sounds")
 
 
 @bp.route("/lineage")
@@ -1096,3 +1106,172 @@ def media_lineage(cid, which):
             abort(404)
         return send_file(c["path"], conditional=True)
     abort(404)
+
+
+# --- sound library -----------------------------------------------------------------------------
+
+def _snd(fn, *a, **k):
+    try:
+        return fn(*a, **k)
+    except ValueError as e:
+        abort(400, str(e))
+    except LookupError as e:
+        abort(404, str(e))
+
+
+def _tags(v) -> list[str]:
+    if isinstance(v, str):
+        v = v.split(",")
+    return [str(t).strip() for t in (v or []) if str(t).strip()]
+
+
+@bp.route("/api/sounds")
+def api_sounds():
+    a = request.args
+    return jsonify(sounds=sounds.list_sounds(a.get("category") or None, a.get("q") or None, a.get("fav") == "1"),
+                   categories=sounds.categories(), folder=sounds.sounds_dir())
+
+
+@bp.route("/api/sounds/rescan", methods=["POST"])
+def api_sounds_rescan():
+    return _job(jobs.submit("sounds", "Sound library: rescan folder", sounds.rescan, ref="sounds"))
+
+
+@bp.route("/api/sounds/<int:sid>", methods=["PATCH", "DELETE"])
+def api_sound(sid):
+    if request.method == "DELETE":
+        _snd(sounds.delete, sid)
+        return jsonify(ok=True)
+    d = _body()
+    return jsonify(_snd(sounds.update, sid, name=d.get("name"), category=d.get("category"),
+                        tags=_tags(d["tags"]) if "tags" in d else None, loop=d.get("loop"), fav=d.get("fav"),
+                        notes=d.get("notes")))
+
+
+@bp.route("/media/sound/<int:sid>")
+def media_sound(sid):
+    x = _snd(sounds.get, sid)
+    if not os.path.exists(x["path"]):
+        abort(404)
+    return send_file(x["path"], conditional=True, as_attachment=request.args.get("dl") == "1",
+                     download_name=os.path.basename(x["path"]))
+
+
+@bp.route("/api/sounds/sources", methods=["GET", "POST"])
+def api_sound_sources():
+    if request.method == "POST":
+        keys = [_snd(sounds.add_source, f.filename, f.stream) for f in request.files.getlist("audio")]
+        if not keys:
+            abort(400, "no audio files in the upload")
+        return jsonify(keys=keys)
+    return jsonify(sources=sounds.list_sources())
+
+
+@bp.route("/api/sounds/analyze", methods=["POST"])
+def api_sounds_analyze():
+    key = _body().get("key") or ""
+    _, name = _snd(sounds.source_path, key)
+    if jobs.active_for(f"sounds:{key}"):
+        abort(409, "already analysing this source")
+    return _job(jobs.submit("sounds", f"Sounds: analyse {name}", sounds.analyze, key, ref=f"sounds:{key}"))
+
+
+@bp.route("/api/sounds/analysis")
+def api_sounds_analysis():
+    a = request.args
+    below = _num(a, "below") or 35.0
+    min_gap = _num(a, "min_gap")
+    return jsonify(_snd(sounds.analysis, a.get("key") or "", max(5.0, min(below, 80.0)),
+                        0.3 if min_gap is None else max(0.02, min(min_gap, 10.0))))
+
+
+@bp.route("/media/sound-source")
+def media_sound_source():
+    return send_file(_snd(sounds.preview_audio, request.args.get("key") or ""), conditional=True,
+                     mimetype="audio/mp4")
+
+
+def _save_opts(d: dict) -> dict:
+    return {"trim": d.get("trim", True) is not False, "fade": _num(d, "fade") if d.get("fade") is not None else 0.005,
+            "normalize": bool(d.get("normalize")), "below": _num(d, "below") or 35.0}
+
+
+@bp.route("/api/sounds/save", methods=["POST"])
+def api_sounds_save():
+    d = _body()
+    start, end = _num(d, "start"), _num(d, "end")
+    if start is None or end is None:
+        abort(400, "select a range first")
+    return jsonify(_snd(sounds.save, d.get("key") or "", start, end, (d.get("name") or "").strip(),
+                        d.get("category") or "other", _tags(d.get("tags")), bool(d.get("loop")),
+                        notes=d.get("notes") or "", **_save_opts(d)))
+
+
+@bp.route("/api/sounds/save-many", methods=["POST"])
+def api_sounds_save_many():
+    d = _body()
+    key, items = d.get("key") or "", d.get("items") or []
+    _snd(sounds.source_path, key)
+    if not items:
+        abort(400, "tick at least one sound")
+    opts = _save_opts(d)
+
+    def run(job):
+        out = []
+        job.update(total=len(items))
+        for n, it in enumerate(items):
+            job.check()
+            out.append(sounds.save(key, float(it["start"]), float(it["end"]), (it.get("name") or "").strip(),
+                                   it.get("category") or "other", _tags(it.get("tags")), bool(it.get("loop")), **opts)["id"])
+            job.update(progress=n + 1, message=f"saved {n + 1} of {len(items)}")
+        return {"saved": len(out)}
+    return _job(jobs.submit("sounds", f"Sounds: save {len(items)} clips", run, ref=f"sounds:{key}"))
+
+
+# --- mix: layer sounds onto a video ----------------------------------------------------------------
+
+@bp.route("/api/mixes", methods=["GET", "POST"])
+def api_mixes():
+    if request.method == "POST":
+        d = _body()
+        spec = d.get("video") or {}
+        if spec.get("kind") == "library":
+            _vid(spec.get("id") or "")
+        return jsonify(_snd(mix.create, spec, d.get("name")))
+    renders = [{"session": x["id"], "created": x["created"], "names": x["names"], "segments": x["segments"]}
+               for x in colormatch.list_sessions() if x.get("rendered")]
+    return jsonify(mixes=mix.list_mixes(), renders=renders,
+                   videos=[{"id": v["id"], "name": v["name"], "duration": (v["info"] or {}).get("duration")}
+                           for v in library.list_videos()])
+
+
+@bp.route("/api/mixes/<mid>", methods=["GET", "PUT", "DELETE"])
+def api_mix(mid):
+    if request.method == "DELETE":
+        _snd(mix.delete, mid)
+        return jsonify(ok=True)
+    if request.method == "PUT":
+        return jsonify(_snd(mix.save, mid, _body()))
+    return jsonify(_snd(mix.get, mid))
+
+
+@bp.route("/api/mixes/<mid>/render", methods=["POST"])
+def api_mix_render(mid):
+    m = _snd(mix.get, mid)
+    if jobs.active_for(f"mix:{mid}"):
+        abort(409, "this mix is already rendering")
+    return _job(jobs.submit("mix", f"Mix: render {m['name']}", mix.render, mid,
+                            to_library=bool(_body().get("library")), ref=f"mix:{mid}"))
+
+
+@bp.route("/media/mix/<mid>/video")
+def media_mix_video(mid):
+    return send_file(_snd(mix.video_path, mid), conditional=True)
+
+
+@bp.route("/api/mixes/<mid>/file/<name>")
+def api_mix_file(mid, name):
+    p = _snd(mix.output_path, mid, name)
+    if not os.path.isfile(p):
+        abort(404)
+    return send_file(p, conditional=True, as_attachment=request.args.get("dl") == "1")

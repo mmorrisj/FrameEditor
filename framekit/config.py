@@ -147,6 +147,7 @@ def directories() -> dict:
     """Every configured directory, for `framekit dirs` and the startup log."""
     return {"work": WORK, "config": CONFIG_PATH, "uploads": UPLOADS, "exports": EXPORTS,
             "quarantine": QUARANTINE, "colormatch": COLORMATCH,
+            "sounds (FRAMEKIT_SOUNDS)": env_path("FRAMEKIT_SOUNDS", os.path.join(WORK, "sounds")),
             "library roots (from FRAMEKIT_ROOTS)": env_paths("FRAMEKIT_ROOTS"),
             "lineage folders (from FRAMEKIT_LINEAGE_DIRS)": env_paths("FRAMEKIT_LINEAGE_DIRS"),
             "frame inbox (FRAMEKIT_FRAME_INBOX)": os.environ.get("FRAMEKIT_FRAME_INBOX") or "(default)"}
