@@ -19,7 +19,10 @@
   .mx-mark span { position: absolute; top: 12px; left: 2px; font-size: 10px; color: var(--amber); white-space: nowrap; }
   .mx-video .mx-lane { height: 22px; }
   .mx-seg { position: absolute; top: 3px; bottom: 3px; border-radius: 3px; font-size: 10px; color: #fff; padding-left: 4px; overflow: hidden; white-space: nowrap; }
-  .mx-track .mx-lane { height: 56px; }
+  .mx-track .mx-lane { height: 76px; }
+  .mx-head select { font-size: 11px; padding: 0 2px; max-width: 100%; }
+  .mx-clip.busy { opacity: .55; }
+  .mx-clip .tag { position: absolute; right: 9px; top: 0; font-size: 10px; color: #ffd27a; pointer-events: none; }
   .mx-track.drop .mx-lane { background: rgba(57,135,229,.08); }
   .mx-clip { position: absolute; top: 4px; bottom: 4px; border-radius: 5px; background: #24466f; border: 1px solid #3987e5; overflow: hidden; cursor: grab; }
   .mx-clip.sel { border-color: #fff; box-shadow: 0 0 0 1px #fff; }
@@ -112,6 +115,29 @@
       <label>fade in <input type="number" id="iFi" step="0.05" min="0" style="width:5em"> s</label>
       <label>fade out <input type="number" id="iFo" step="0.05" min="0" style="width:5em"> s</label>
       <label title="repeat the sound to fill the clip (for ambience beds)"><input type="checkbox" id="iLoop"> loop to fill</label>
+      <label>pan <span class="dim">L</span> <input type="range" id="iPan" min="-1" max="1" step="0.05" style="width:130px" title="double-click to centre"> <span class="dim">R</span> <span class="mono" id="iPanV"></span></label>
+    </div>
+    <div class="row" style="margin-top:6px">
+      <b class="dim">Cleanup</b>
+      <label title="bring this clip to a common loudness, so sounds from different sources sit together; volume then adjusts from there"><input type="checkbox" id="iMatch"> match loudness</label>
+      <label title="reduce steady hiss and hum; strong settings can sound watery">noise reduction <select id="iNr"><option value="off">off</option><option value="light">light</option><option value="medium">medium</option><option value="strong">strong</option></select></label>
+      <label title="remove rumble and thumps below this frequency">low cut <select id="iLow"></select></label>
+      <label title="soften harsh or hissy highs above this frequency">high cut <select id="iHigh"></select></label>
+      <label title="remove small clicks and pops"><input type="checkbox" id="iClick"> de-click</label>
+      <span class="dim" id="iBusy"></span>
+    </div>
+  </div>
+
+  <div class="card" id="masterCard" style="margin-top:10px">
+    <div class="row">
+      <b>Master</b>
+      <label title="the final loudness of the whole mix: what the destination expects">loudness <select id="mTarget"></select></label>
+      <label title="catches peaks so the mix never clips"><input type="checkbox" id="mLim"> limiter, ceiling
+        <select id="mCeil"><option value="-0.1">-0.1 dB</option><option value="-0.5">-0.5 dB</option><option value="-1">-1 dB</option><option value="-2">-2 dB</option></select></label>
+      <label title="gentle compression that evens the mix out and makes layers feel like one sound"><input type="checkbox" id="mGlue"> glue compression</label>
+      <span class="grow"></span>
+      <span class="dim" id="mMeas"></span>
+      <button class="small" id="measureBtn" title="mix the audio and measure its loudness, so the preview plays at the level the render will have">Measure</button>
     </div>
   </div>
 </div>
@@ -174,7 +200,9 @@ async function editView() {
   await loadSounds();
   render();
   initAudio();
-  M.clips.forEach(c => buffer(c.sound));
+  M.clips.forEach(c => prepare(c));
+  initMaster();
+  loadDuck();
 }
 $("mxName").onchange = () => { M.name = $("mxName").value; dirty(); };
 
@@ -261,8 +289,18 @@ function render() {
   // sound tracks
   for (const t of M.tracks) {
     const r = row("mx-track", `<div class="row"><input class="tn" style="width:100%;font-size:12px"><button class="small tx" title="remove track">✕</button></div>
-      <div class="row"><input type="range" min="-30" max="12" step="0.5" class="tv"><button class="small tm"></button></div>`, W);
+      <div class="row"><input type="range" min="-30" max="12" step="0.5" class="tv"><button class="small tm"></button></div>
+      <div class="row" title="dip this track while the video's own audio (or another track) plays"><select class="td" style="flex:1;min-width:0"></select><select class="tdd"></select></div>`, W);
     r.dataset.track = t.id;
+    const td = r.querySelector(".td"), tdd = r.querySelector(".tdd");
+    td.add(new Option("no ducking", ""));
+    td.add(new Option("duck under video", "original"));
+    for (const o of M.tracks) if (o.id !== t.id) td.add(new Option(`duck under ${o.name}`, o.id));
+    td.value = t.duck_source || "";
+    for (const v of [6, 10, 15, 20, 30]) tdd.add(new Option(`-${v} dB`, v));
+    tdd.value = String(t.duck_db || 10); tdd.disabled = !t.duck_source;
+    td.onchange = () => { t.duck_source = td.value; tdd.disabled = !td.value; dirty(true); };
+    tdd.onchange = () => { t.duck_db = +tdd.value; dirty(true); };
     const tn = r.querySelector(".tn"), tv = r.querySelector(".tv"), tm = r.querySelector(".tm");
     tn.value = t.name; tn.onchange = () => { t.name = tn.value; dirty(); };
     tv.value = t.volume_db; tv.title = `${t.volume_db} dB`;
@@ -310,7 +348,11 @@ function clipEl(c) {
   // edge handles shrink on short clips so there is always a middle to grab for moving
   const hw = Math.max(2, Math.min(7, Math.floor(c.length * pps / 4)));
   d.querySelectorAll(".h").forEach(h => h.style.width = `${hw}px`);
+  d.dataset.id = c.id;
+  if (pending.has(c.id)) d.classList.add("busy");
   d.querySelector(".nm").textContent = (s ? s.name : "missing sound") + (c.loop ? " ⟳" : "");
+  const tags = [hasFx(c) ? "fx" : "", Math.abs(c.pan || 0) > 0.01 ? (c.pan < 0 ? `L${Math.round(-c.pan * 100)}` : `R${Math.round(c.pan * 100)}`) : ""].filter(Boolean);
+  if (tags.length) { const tg = document.createElement("span"); tg.className = "tag"; tg.textContent = tags.join(" "); d.append(tg); }
   d.title = `${s ? s.name : "missing"} · ${c.start.toFixed(2)}–${(c.start + c.length).toFixed(2)} s`;
   requestAnimationFrame(() => drawClip(d.querySelector("canvas"), c, s));
   d.onmousedown = e => clipDown(e, c, d);
@@ -412,8 +454,9 @@ function addClip(sid, track, t) {
   if (!s) return;
   const start = snapT(Math.max(0, Math.min(M.duration - 0.05, t)));
   const c = {id: newId(), track, sound: sid, start, offset: 0, length: Math.min(s.duration, M.duration - start),
+             match: true, nr: "off", lowcut: 0, highcut: 0, declick: false, pan: 0,
              loop: false, volume_db: 0, fade_in: 0, fade_out: 0};
-  M.clips.push(c); sel = c.id; buffer(sid); render(); dirty(true);
+  M.clips.push(c); sel = c.id; prepare(c); render(); dirty(true);
 }
 
 /* ---- tools and keys ---- */
@@ -475,6 +518,10 @@ function inspector() {
   $("iStart").value = c.start.toFixed(2); $("iLen").value = c.length.toFixed(2); $("iOff").value = c.offset.toFixed(2);
   $("iVol").value = c.volume_db; $("iVolV").textContent = `${c.volume_db > 0 ? "+" : ""}${c.volume_db} dB`;
   $("iFi").value = c.fade_in; $("iFo").value = c.fade_out; $("iLoop").checked = c.loop;
+  $("iPan").value = c.pan || 0; $("iPanV").textContent = panText(c.pan || 0);
+  $("iMatch").checked = !!c.match; $("iNr").value = c.nr || "off"; $("iClick").checked = !!c.declick;
+  fillHz($("iLow"), M.options.lowcut, c.lowcut || 0); fillHz($("iHigh"), M.options.highcut, c.highcut || 0);
+  $("iBusy").textContent = pending.has(c.id) ? "processing…" : "";
 }
 function edit(fn) { const c = M.clips.find(x => x.id === sel); if (!c) return; fn(c, SND[c.sound]); render(); dirty(true); }
 $("iStart").onchange = () => edit(c => c.start = Math.max(0, +$("iStart").value));
@@ -484,6 +531,51 @@ $("iVol").oninput = () => { const c = M.clips.find(x => x.id === sel); if (!c) r
 $("iFi").onchange = () => edit(c => c.fade_in = Math.max(0, Math.min(+$("iFi").value, c.length / 2)));
 $("iFo").onchange = () => edit(c => c.fade_out = Math.max(0, Math.min(+$("iFo").value, c.length / 2)));
 $("iLoop").onchange = () => edit((c, s) => { c.loop = $("iLoop").checked; if (!c.loop && s) c.length = Math.min(c.length, s.duration - c.offset); });
+const panText = p => Math.abs(p) < 0.01 ? "centre" : p < 0 ? `${Math.round(-p * 100)}% left` : `${Math.round(p * 100)}% right`;
+function fillHz(sel, list, v) {
+  if (!sel.options.length) for (const f of list) sel.add(new Option(f ? (f >= 1000 ? `${f / 1000} kHz` : `${f} Hz`) : "off", f));
+  sel.value = String(v);
+}
+$("iPan").oninput = () => { const c = M.clips.find(x => x.id === sel); if (!c) return; c.pan = +$("iPan").value; $("iPanV").textContent = panText(c.pan); dirty(true); };
+$("iPan").onchange = () => render();
+$("iPan").ondblclick = () => { $("iPan").value = 0; $("iPan").oninput(); render(); };
+const fxEdit = fn => edit(c => { fn(c); prepare(c); });
+$("iMatch").onchange = () => fxEdit(c => c.match = $("iMatch").checked);
+$("iNr").onchange = () => fxEdit(c => c.nr = $("iNr").value);
+$("iLow").onchange = () => fxEdit(c => c.lowcut = +$("iLow").value);
+$("iHigh").onchange = () => fxEdit(c => c.highcut = +$("iHigh").value);
+$("iClick").onchange = () => fxEdit(c => c.declick = $("iClick").checked);
+
+/* ---- master ---- */
+function initMaster() {
+  const ms = M.master;
+  if (!$("mTarget").options.length) for (const [k, v] of Object.entries(M.options.targets)) $("mTarget").add(new Option(v, k));
+  $("mTarget").value = ms.target; $("mLim").checked = ms.limiter; $("mCeil").value = String(ms.ceiling); $("mGlue").checked = ms.glue;
+  measInfo();
+}
+function measInfo() {
+  const me = M.measured, ms = M.master;
+  let t = "";
+  if (ms.target !== "off") {
+    if (!me || me.lufs == null) t = "Measure to preview at the target level";
+    else t = `mix measures ${me.lufs.toFixed(1)} LUFS, so ${levelDb() >= 0 ? "+" : ""}${levelDb().toFixed(1)} dB to reach ${ms.target}` +
+             (M.updated > me.at + 1 ? " · changed since: measure again" : "");
+  } else if (me && me.lufs != null) t = `mix measures ${me.lufs.toFixed(1)} LUFS`;
+  $("mMeas").textContent = t;
+}
+function masterEdit(fn) { fn(M.master); if (ctx) buildMaster(); measInfo(); dirty(); }
+$("mTarget").onchange = () => masterEdit(ms => ms.target = $("mTarget").value);
+$("mLim").onchange = () => masterEdit(ms => ms.limiter = $("mLim").checked);
+$("mCeil").onchange = () => masterEdit(ms => ms.ceiling = +$("mCeil").value);
+$("mGlue").onchange = () => masterEdit(ms => ms.glue = $("mGlue").checked);
+$("measureBtn").onclick = async () => {
+  clearTimeout(saveT);
+  try {
+    await putMix();
+    const j = await FK.runJob(`/api/mixes/${MID}/measure`, {}, $("bar"), $("barLbl"));
+    M.measured = j.result; buildMaster(); measInfo();
+  } catch (e) { FK.fail(e); }
+};
 
 /* ---- saving (debounced) ---- */
 let saveT = null;
@@ -492,48 +584,119 @@ function dirty(resched) {
   clearTimeout(saveT);
   saveT = setTimeout(async () => {
     try {
-      const r = await FK.api(`/api/mixes/${MID}`, {method: "PUT", headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({name: M.name, original: M.original, tracks: M.tracks, clips: M.clips})});
+      const r = await putMix();
       Object.assign(SND, r.sounds);
+      M.updated = r.updated; M.measured = r.measured; measInfo();
       $("saveState").textContent = "saved";
+      await loadDuck();
+      if (!V().paused) schedule();
     } catch (e) { $("saveState").textContent = "not saved"; FK.fail(e); }
   }, 600);
   if (resched && !V().paused) schedule();
 }
+function putMix() {
+  return FK.api(`/api/mixes/${MID}`, {method: "PUT", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({name: M.name, original: M.original, tracks: M.tracks, clips: M.clips, master: M.master})});
+}
+async function loadDuck() {
+  try { DUCK = await FK.api(`/api/mixes/${MID}/duck`); } catch { DUCK = {}; }
+}
 
-/* ---- preview: the video is the clock; sounds are scheduled with Web Audio ---- */
-let ctx = null, vgain = null, live = [];
-const bufs = {};
+/* ---- preview: the video is the clock; sounds are scheduled with Web Audio ----
+   clip (processed copy when it has cleanup) -> fades and volume -> pan -> track gain, following the
+   same ducking curve the render uses -> master: glue, the loudness-target gain, limiter */
+let ctx = null, vgain = null, masterIn = null, masterNodes = [], live = [], DUCK = {};
+const bufs = {}, pending = new Set();
 function initAudio() {
   ctx = new AudioContext();
+  masterIn = ctx.createGain();
   vgain = ctx.createGain();
-  ctx.createMediaElementSource(V()).connect(vgain).connect(ctx.destination);
+  ctx.createMediaElementSource(V()).connect(vgain).connect(masterIn);
+  buildMaster();
   applyOrig();
 }
+function buildMaster() {
+  masterIn.disconnect();
+  masterNodes.forEach(n => n.disconnect());
+  masterNodes = [];
+  let node = masterIn;
+  const ms = M.master, add = n => { node.connect(n); node = n; masterNodes.push(n); };
+  if (ms.glue) {
+    const c = ctx.createDynamicsCompressor();
+    c.threshold.value = -18; c.ratio.value = 2; c.knee.value = 6; c.attack.value = 0.02; c.release.value = 0.25;
+    add(c);
+  }
+  const lv = ctx.createGain(); lv.gain.value = dbGain(levelDb()); add(lv);
+  if (ms.limiter) {
+    const l = ctx.createDynamicsCompressor();
+    l.threshold.value = ms.ceiling; l.knee.value = 0; l.ratio.value = 20; l.attack.value = 0.002; l.release.value = 0.05;
+    add(l);
+  }
+  node.connect(ctx.destination);
+}
+function levelDb() {  // the gain the loudness target will apply, from the last measurement
+  const ms = M.master, me = M.measured;
+  if (ms.target === "off" || !me || me.lufs == null) return 0;
+  return Math.max(-20, Math.min(20, +ms.target - me.lufs));
+}
 function applyOrig() { if (vgain) vgain.gain.value = M.original.mute ? 0 : dbGain(M.original.volume_db); }
-function buffer(id) {
-  if (!bufs[id]) bufs[id] = fetch(`/media/sound/${id}`).then(r => r.arrayBuffer()).then(b => ctx.decodeAudioData(b)).catch(() => null);
-  return bufs[id];
+const hasFx = c => !!(c.match || (c.nr && c.nr !== "off") || c.lowcut || c.highcut || c.declick);
+const fxKey = c => `m${+!!c.match}-n${c.nr || "off"}-l${c.lowcut || 0}-h${c.highcut || 0}-d${+!!c.declick}`;
+const clipUrl = c => hasFx(c) ? `/media/mix-fx/${c.sound}?fx=${fxKey(c)}` : `/media/sound/${c.sound}`;
+function buffer(url) {
+  if (!bufs[url]) bufs[url] = fetch(url).then(r => { if (!r.ok) throw new Error(r.statusText); return r.arrayBuffer(); })
+    .then(b => ctx.decodeAudioData(b)).catch(() => { delete bufs[url]; return null; });
+  return bufs[url];
+}
+function prepare(c) {  // fetch (and on the server, build) the clip's audio; show it as busy meanwhile
+  const url = clipUrl(c);
+  if (bufs[url] || !ctx) { if (ctx) buffer(url); return; }
+  pending.add(c.id);
+  buffer(url).then(() => {
+    pending.delete(c.id);
+    document.querySelector(`.mx-clip[data-id="${c.id}"]`)?.classList.remove("busy");
+    if (sel === c.id) $("iBusy").textContent = "";
+  });
+  document.querySelector(`.mx-clip[data-id="${c.id}"]`)?.classList.add("busy");
 }
 function stopAll() { for (const n of live) { try { n.stop(); } catch {} } live = []; }
+function duckAutomate(param, pts, T, now, base) {
+  const at = t => {
+    for (let i = 1; i < pts.length; i++) if (pts[i][0] >= t) {
+      const [t0, g0] = pts[i - 1], [t1, g1] = pts[i];
+      return g0 + (g1 - g0) * ((t - t0) / Math.max(1e-6, t1 - t0));
+    }
+    return pts[pts.length - 1][1];
+  };
+  param.setValueAtTime(base * at(T), now);
+  for (const [t, g] of pts) if (t > T) param.linearRampToValueAtTime(base * g, now + (t - T));
+}
 let schedN = 0;
 async function schedule() {
   stopAll();
   const my = ++schedN;
-  await Promise.all(M.clips.map(c => buffer(c.sound)));
+  await Promise.all(M.clips.map(c => buffer(clipUrl(c))));
   if (my !== schedN || V().paused) return;
   const T = V().currentTime, now = ctx.currentTime;
-  const tracks = Object.fromEntries(M.tracks.map(t => [t.id, t]));
+  const tg = {};
+  for (const t of M.tracks) {
+    if (t.mute) continue;
+    const g = ctx.createGain();
+    g.gain.value = dbGain(t.volume_db);
+    if ((DUCK[t.id] || []).length) duckAutomate(g.gain, DUCK[t.id], T, now, dbGain(t.volume_db));
+    g.connect(masterIn);
+    tg[t.id] = g;
+    live.push({stop() { g.disconnect(); }});
+  }
   for (const c of M.clips) {
-    const t = tracks[c.track];
-    const b = await bufs[c.sound];
-    if (!t || t.mute || !b || c.start + c.length <= T) continue;
+    const b = await bufs[clipUrl(c)];
+    if (!tg[c.track] || !b || c.start + c.length <= T) continue;
     const into = Math.max(0, T - c.start), when = now + Math.max(0, c.start - T), rest = c.length - into;
     let off = c.offset + into;
     if (c.loop) off %= b.duration; else if (off >= b.duration) continue;
-    const src = ctx.createBufferSource(), g = ctx.createGain();
-    src.buffer = b; src.loop = c.loop;
-    const vol = dbGain(t.volume_db + c.volume_db);
+    const src = ctx.createBufferSource(), g = ctx.createGain(), pan = ctx.createStereoPanner();
+    src.buffer = b; src.loop = c.loop; pan.pan.value = c.pan || 0;
+    const vol = dbGain(c.volume_db);
     const env = u => vol * Math.min(1, c.fade_in ? u / c.fade_in : 1, c.fade_out ? (c.length - u) / c.fade_out : 1);
     g.gain.setValueAtTime(Math.max(0, env(into)), when);
     if (c.fade_in && into < c.fade_in) g.gain.linearRampToValueAtTime(vol, when + (c.fade_in - into));
@@ -542,7 +705,7 @@ async function schedule() {
       g.gain.setValueAtTime(Math.max(0, env(fs)), when + (fs - into));
       g.gain.linearRampToValueAtTime(0, when + rest);
     }
-    src.connect(g).connect(ctx.destination);
+    src.connect(g).connect(pan).connect(tg[c.track]);
     src.start(when, off);
     src.stop(when + rest);
     live.push(src);
@@ -572,7 +735,7 @@ function movePlayhead() {
 /* ---- render ---- */
 function renderOutputs() {
   const o = M.outputs || [];
-  $("outputs").innerHTML = o.length ? `Rendered: <a href="/api/mixes/${MID}/file/${encodeURIComponent(o[0].file)}" target="_blank">${esc(o[0].file)}</a>
+  $("outputs").innerHTML = o.length ? `Rendered${o[0].lufs != null ? ` (${o[0].lufs.toFixed(1)} LUFS, peak ${o[0].peak?.toFixed(1)} dB)` : ""}: <a href="/api/mixes/${MID}/file/${encodeURIComponent(o[0].file)}" target="_blank">${esc(o[0].file)}</a>
     · <a href="/api/mixes/${MID}/file/${encodeURIComponent(o[0].file)}?dl=1">download</a>${o.length > 1 ? ` · ${o.length - 1} earlier` : ""}` : "";
 }
 $("renderBtn").onclick = async () => {

@@ -1252,7 +1252,30 @@ def api_mix(mid):
         return jsonify(ok=True)
     if request.method == "PUT":
         return jsonify(_snd(mix.save, mid, _body()))
-    return jsonify(_snd(mix.get, mid))
+    m = _snd(mix.get, mid)
+    m["options"] = {"targets": mix.TARGETS, "nr": list(mix.NR), "lowcut": mix.LOWCUT, "highcut": mix.HIGHCUT,
+                    "clip_target": mix.CLIP_TARGET}
+    return jsonify(m)
+
+
+@bp.route("/api/mixes/<mid>/duck")
+def api_mix_duck(mid):
+    return jsonify(_snd(mix.duck_curves, mid))
+
+
+@bp.route("/api/mixes/<mid>/measure", methods=["POST"])
+def api_mix_measure(mid):
+    m = _snd(mix.get, mid)
+    if jobs.active_for(f"mix:{mid}"):
+        abort(409, "this mix is busy")
+    return _job(jobs.submit("mix", f"Mix: measure {m['name']}", mix.measure, mid, ref=f"mix:{mid}"))
+
+
+@bp.route("/media/mix-fx/<int:sid>")
+def media_mix_fx(sid):
+    """A sound with a clip's cleanup applied (built once, then cached)."""
+    fx = _snd(mix.parse_fx, request.args.get("fx") or "")
+    return send_file(_snd(mix.processed_path, sid, fx), mimetype="audio/wav", max_age=86400)
 
 
 @bp.route("/api/mixes/<mid>/render", methods=["POST"])
