@@ -543,12 +543,19 @@ function renderOutputs() {
       ${o.lossless ? "" : `<video controls preload="metadata" src="${f(o.joined)}" style="max-width:560px;width:100%;border-radius:6px;background:#000"></video>`}
       <div class="col">
         <div><a href="${f(o.joined)}?dl=1">Download ${esc(o.joined)}</a></div>
+        <div><button class="small" id="layerBtn" title="open this video in Mix to layer sounds from your sound library">Layer sounds…</button></div>
         <div class="dim">${o.frames} frames${o.crossfade ? ` · ${o.crossfade}-frame crossfades` : ""}${o.lossless ? " · lossless" : ""} · ${FK.when(o.rendered)}</div>
         ${o.clips.length ? `<div><b>Segment clips</b><br>${o.clips.map(c => `<a href="${f(c)}?dl=1">${esc(c)}</a>`).join("<br>")}</div>` : ""}
         <div><b>Corrected last frames</b> <span class="dim">(clean handoff images for regenerating the next segment)</span><br>
           ${o.handoff.map(h => `<a href="${f("handoff/" + h)}?dl=1">${esc(h)}</a>`).join("<br>")}</div>
         ${o.kept_frames ? `<div class="dim">PNG frames kept in the session's frames folder.</div>` : ""}
       </div></div>`;
+  $("layerBtn").onclick = async () => {
+    try {
+      const m = await FK.api("/api/mixes", {json: {video: {kind: "colormatch", session: S.id, file: o.joined}}});
+      location.href = `/mix?id=${m.id}`;
+    } catch (e) { FK.fail(e); }
+  };
 }
 
 /* ---- sessions ---- */

@@ -458,6 +458,58 @@ def cmd_dirs(a):
     _p(f".env: {env} ({'found' if os.path.isfile(env) else 'not found'})")
 
 
+def _sound_source(path: str) -> str:
+    """A cutter source key for a file on disk: videos go through the library, audio files are copied in."""
+    from .tools import sounds
+    if not os.path.isfile(path):
+        sys.exit(f"no such file: {path}")
+    if os.path.splitext(path)[1].lower() in config.VIDEO_EXTS:
+        return "v:" + _library_video(path)["id"]
+    for x in sounds.list_sources():  # already copied in (same name and size)?
+        if x["kind"] == "audio file" and x["name"] == os.path.basename(path) and x.get("size") == os.path.getsize(path):
+            return x["key"]
+    with open(path, "rb") as f:
+        return sounds.add_source(os.path.basename(path), f)
+
+
+def cmd_sounds(a):
+    from .tools import sounds
+    if a.action == "list":
+        rows = sounds.list_sounds(a.category, " ".join(a.args) or None)
+        for x in rows:
+            _p(f"{x['id']:5d}  {x['category']:10} {x['duration']:7.2f}s  {x['name']}"
+               + (f"  [{', '.join(x['tags'])}]" if x["tags"] else "") + f"  {x['path']}")
+        _p(f"{len(rows)} sound(s) in {sounds.sounds_dir()}")
+        return
+    if a.action == "rescan":
+        r = jobs.run_sync(sounds.rescan, label="rescanning")
+        _p(f"added {r['added']}, removed {r['removed']}")
+        return
+    if not a.args:
+        sys.exit(f"usage: sounds {a.action} FILE" + (" START END" if a.action == "cut" else ""))
+    key = _sound_source(a.args[0])
+    jobs.run_sync(sounds.analyze, key, label="analysing")
+    opts = {"trim": not a.no_trim, "normalize": a.normalize, "below": a.below}
+    tags = [t.strip() for t in (a.tags or "").split(",") if t.strip()]
+    if a.action == "cut":
+        if len(a.args) != 3:
+            sys.exit("usage: sounds cut FILE START END (seconds)")
+        x = sounds.save(key, float(a.args[1]), float(a.args[2]), a.name or "", a.category or "other", tags,
+                        loop=a.loop, **opts)
+        _p(f"saved {x['path']} ({x['duration']:.2f}s)")
+        return
+    r = sounds.analysis(key, a.below, a.min_gap)  # split
+    stem = a.name or os.path.splitext(os.path.basename(a.args[0]))[0]
+    _p(f"{len(r['sounds'])} sound(s) found (gap threshold {r['threshold']} dBFS)")
+    if a.dry_run:
+        for k, x in enumerate(r["sounds"], 1):
+            _p(f"  {k:3d}  {x['start']:8.3f}s to {x['end']:8.3f}s  ({x['end'] - x['start']:.2f}s, {x['level']} dB)")
+        return
+    for k, x in enumerate(r["sounds"], 1):
+        y = sounds.save(key, x["start"], x["end"], f"{stem} {k:02d}", a.category or "other", tags, loop=a.loop, **opts)
+        _p(f"  saved {y['path']} ({y['duration']:.2f}s)")
+
+
 def cmd_serve(a):
     if a.log:  # background runs (pythonw) have no console: send all output to a file
         import logging
@@ -604,6 +656,21 @@ def main(argv=None):
     s.add_argument("--folder", help="work within just this folder instead of every saved one")
     s.add_argument("--faces", action="store_true", help="tree: show each take's likeness to the original face")
     s.set_defaults(fn=cmd_lineage)
+
+    s = sub.add_parser("sounds", help="cut audio into clips for the sound library",
+                       description="actions: list [SEARCH] | rescan | split FILE | cut FILE START END")
+    s.add_argument("action", choices=["list", "rescan", "split", "cut"])
+    s.add_argument("args", nargs="*", help="search words, or a video/audio file (and START END seconds for cut)")
+    s.add_argument("--category", help="category to save into (default: other) or to list")
+    s.add_argument("--name", help="clip name (split: prefix for the numbered clips)")
+    s.add_argument("--tags", help="comma-separated tags")
+    s.add_argument("--loop", action="store_true", help="mark the clips as loopable")
+    s.add_argument("--below", type=float, default=35.0, help="gaps are this many dB below the loud parts (default 35)")
+    s.add_argument("--min-gap", type=float, default=0.3, help="shortest gap that splits sounds, seconds (default 0.3)")
+    s.add_argument("--normalize", action="store_true", help="peak-normalise each clip to -1 dBFS")
+    s.add_argument("--no-trim", action="store_true", help="keep the exact range instead of trimming silence")
+    s.add_argument("--dry-run", action="store_true", help="split: only list what would be saved")
+    s.set_defaults(fn=cmd_sounds)
 
     s = sub.add_parser("dupes", help="find duplicate videos (dry run unless --apply)")
     s.add_argument("dirs", nargs="*", help="folders to check (default: library folders)")

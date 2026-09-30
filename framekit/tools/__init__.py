@@ -3,6 +3,8 @@
 frames    - break a video into image frames (all, every Nth, fixed rate, scene changes, keyframes)
 scenes    - split a video into one clip per scene, with tunable and hand-editable cuts
 lineage   - rebuild parent/child chains of AI clips from first and last frames
+sounds    - cut audio into clips and keep them in a searchable sound library
+mix       - layer library sounds onto a video on a multi-track timeline, render without re-encoding
 colormatch - undo color drift across chained AI segments and join them
 audio     - pull the audio track out untouched, or convert it
 resize    - scale without stretching: keep the shape, or pad / blur / crop to a new one

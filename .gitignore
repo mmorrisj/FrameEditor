@@ -13,3 +13,4 @@ projects/
 # Machine-specific library folders (see framekit.example.json) and directories (see .env.example)
 framekit.json
 .env
+sounds/

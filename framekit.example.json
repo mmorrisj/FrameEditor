@@ -2,5 +2,16 @@
   "roots": [
     "/home/mmorrisj/Videos",
     "/mnt/media/clips"
-  ]
+  ],
+  "sounds": {
+    "categories": [
+      "ambience",
+      "foley",
+      "footsteps",
+      "impacts",
+      "voice",
+      "music",
+      "other"
+    ]
+  }
 }

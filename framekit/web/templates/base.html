@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{% if title %}{{ title }} · {% endif %}FrameKit</title>
 <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+<link rel="icon" href="data:,">
 <script src="{{ url_for('static', filename='app.js') }}"></script>
 </head>
 <body>
@@ -16,6 +17,8 @@
   <a href="/unique" class="{{ 'on' if page == 'unique' }}">Unique frames</a>
   <a href="/lineage" class="{{ 'on' if page == 'lineage' }}">Lineage</a>
   <a href="/colormatch" class="{{ 'on' if page == 'colormatch' }}">Color match</a>
+  <a href="/sounds" class="{{ 'on' if page == 'sounds' }}">Sounds</a>
+  <a href="/mix" class="{{ 'on' if page == 'mix' }}">Mix</a>
   <a href="/editor/" class="{{ 'on' if page == 'editor' }}">Frame editor</a>
   <span class="spacer"></span>
   <button id="jobsBtn" class="small">Jobs <span class="badge" id="jobsBadge" hidden>0</span></button>

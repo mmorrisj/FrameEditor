@@ -1,0 +1,593 @@
+{% extends "base.html" %}
+{% block main %}
+<style>
+  .mx-top { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 12px; align-items: start; }
+  @media (max-width: 900px) { .mx-top { grid-template-columns: minmax(0, 1fr); } }
+  #vid { width: 100%; max-height: 46vh; background: #000; border-radius: 6px; display: block; }
+  .mx-tools button.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+  #tlWrap { overflow-x: auto; overflow-y: hidden; position: relative; border: 1px solid var(--edge); border-radius: 6px; background: var(--bg); user-select: none; }
+  #tl { position: relative; }
+  .mx-row { display: flex; border-bottom: 1px solid var(--edge); }
+  .mx-head { position: sticky; left: 0; z-index: 3; width: 170px; flex: none; background: var(--panel); border-right: 1px solid var(--edge);
+             padding: 4px 6px; font-size: 12px; display: flex; flex-direction: column; gap: 2px; }
+  .mx-head input[type=range] { width: 100%; }
+  .mx-head .row { gap: 4px; flex-wrap: nowrap; }
+  .mx-lane { position: relative; flex: none; }
+  .mx-ruler .mx-lane { height: 26px; cursor: pointer; }
+  .mx-tick { position: absolute; top: 0; height: 100%; border-left: 1px solid var(--edge); font-size: 10px; color: var(--dim); padding-left: 3px; }
+  .mx-mark { position: absolute; top: 0; bottom: 0; width: 0; border-left: 1px dashed var(--amber); z-index: 1; pointer-events: none; }
+  .mx-mark span { position: absolute; top: 12px; left: 2px; font-size: 10px; color: var(--amber); white-space: nowrap; }
+  .mx-video .mx-lane { height: 22px; }
+  .mx-seg { position: absolute; top: 3px; bottom: 3px; border-radius: 3px; font-size: 10px; color: #fff; padding-left: 4px; overflow: hidden; white-space: nowrap; }
+  .mx-track .mx-lane { height: 56px; }
+  .mx-track.drop .mx-lane { background: rgba(57,135,229,.08); }
+  .mx-clip { position: absolute; top: 4px; bottom: 4px; border-radius: 5px; background: #24466f; border: 1px solid #3987e5; overflow: hidden; cursor: grab; }
+  .mx-clip.sel { border-color: #fff; box-shadow: 0 0 0 1px #fff; }
+  .mx-clip.missing { background: #5a2323; border-color: var(--warn); }
+  .mx-clip canvas { position: absolute; inset: 14px 0 0 0; width: 100%; height: calc(100% - 14px); }
+  .mx-clip .nm { position: absolute; left: 5px; top: 0; font-size: 11px; white-space: nowrap; color: #fff; pointer-events: none; }
+  .mx-clip .h { position: absolute; top: 0; bottom: 0; width: 7px; cursor: ew-resize; z-index: 2; }
+  .mx-clip .h.l { left: 0; } .mx-clip .h.r { right: 0; }
+  .mx-clip .h:hover { background: rgba(255,255,255,.25); }
+  .mx-clip .fi, .mx-clip .fo { position: absolute; top: 0; bottom: 0; pointer-events: none; }
+  .mx-clip .fi { left: 0; background: linear-gradient(to right, rgba(0,0,0,.55), transparent); }
+  .mx-clip .fo { right: 0; background: linear-gradient(to left, rgba(0,0,0,.55), transparent); }
+  .mx-cut .mx-clip, .mx-cut .mx-clip .h { cursor: crosshair; }
+  #ph { position: absolute; top: 0; bottom: 0; width: 1px; background: #fff; z-index: 4; pointer-events: none; }
+  #cutGuide { position: absolute; top: 0; bottom: 0; width: 0; border-left: 1px dashed #fff; z-index: 4; pointer-events: none; display: none; }
+  .mx-snd { display: flex; gap: 6px; align-items: center; padding: 4px; border-bottom: 1px solid var(--edge); cursor: grab; }
+  .mx-snd:hover { background: var(--panel2); }
+  .mx-snd .grow { min-width: 0; }
+  .mx-snd .grow div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #sndList { max-height: 40vh; overflow-y: auto; }
+</style>
+
+<div id="startView" class="hidden">
+  <h1>Mix</h1>
+  <p class="dim" style="margin-top:-6px">Layer sounds from your sound library onto a video, preview in sync, and render.</p>
+  <div class="card">
+    <b>Chained videos</b> <span class="dim">(Colour match renders)</span>
+    <div id="renders" style="margin-top:6px"></div>
+  </div>
+  <div class="card">
+    <div class="row"><b>Any library video</b><select id="libVid" class="grow" style="max-width:480px"></select><button class="primary" id="startLib">Start a mix</button></div>
+  </div>
+  <div class="card"><b>Your mixes</b><div id="mixes" style="margin-top:6px"></div></div>
+</div>
+
+<div id="editView" class="hidden">
+  <div class="row" style="margin-bottom:8px">
+    <h1 style="margin:0"><a href="/mix">Mix</a> /</h1>
+    <input id="mxName" style="font-size:16px;min-width:220px">
+    <span class="dim" id="mxInfo"></span>
+    <span class="grow"></span>
+    <span class="dim" id="saveState"></span>
+    <label class="dim"><input type="checkbox" id="toLib"> add to library</label>
+    <button class="primary" id="renderBtn">Render</button>
+  </div>
+  <div class="row"><progress id="bar" hidden></progress><span id="barLbl" class="dim"></span></div>
+  <div class="mx-top">
+    <div class="card" style="margin:0">
+      <video id="vid" preload="auto" playsinline></video>
+      <div class="row" style="margin-top:6px">
+        <button class="primary" id="playBtn" style="min-width:80px">Play</button>
+        <span class="mono" id="clock">0:00.00</span>
+        <span class="grow"></span>
+        <div id="outputs" class="dim"></div>
+      </div>
+    </div>
+    <div class="card" style="margin:0">
+      <div class="row"><b>Sounds</b><span class="grow"></span><a class="small" href="/sounds#cut" target="_blank">cut more…</a></div>
+      <input id="sq" placeholder="Search sounds" style="width:100%;margin:6px 0">
+      <select id="scat" style="width:100%;margin-bottom:6px"></select>
+      <div class="dim" style="font-size:12px">Drag a sound onto a track, or ＋ to drop it at the playhead.</div>
+      <div id="sndList"></div>
+    </div>
+  </div>
+
+  <div class="row mx-tools" style="margin:12px 0 6px">
+    <button id="toolSel" class="on" title="Select, move and trim (V)">▸ Select</button>
+    <button id="toolCut" title="Click a clip to cut it there (C)">✂ Cut</button>
+    <span class="dim">|</span>
+    <button class="small" id="splitBtn" title="Split the selected clip, or every clip under the playhead (S)">Split at playhead</button>
+    <button class="small" id="dupBtn" title="Duplicate (Ctrl+D)">Duplicate</button>
+    <button class="small danger" id="delBtn" title="Delete">Delete</button>
+    <span class="dim">|</span>
+    <label class="dim"><input type="checkbox" id="snap" checked> snap</label>
+    <label class="dim">zoom <input type="range" id="zoom" min="0" max="100" value="30" style="width:120px"></label>
+    <span class="grow"></span>
+    <button class="small" id="addTrack">＋ Track</button>
+  </div>
+  <div id="tlWrap"><div id="tl"></div></div>
+
+  <div class="card hidden" id="insp" style="margin-top:10px">
+    <div class="row">
+      <b id="iName"></b><span class="dim" id="iInfo"></span><span class="grow"></span>
+      <label>start <input type="number" id="iStart" step="0.01" min="0" style="width:6em"> s</label>
+      <label>length <input type="number" id="iLen" step="0.01" min="0.05" style="width:6em"> s</label>
+      <label>from <input type="number" id="iOff" step="0.01" min="0" style="width:6em"> s into the sound</label>
+    </div>
+    <div class="row" style="margin-top:6px">
+      <label>volume <input type="range" id="iVol" min="-30" max="12" step="0.5" style="width:140px"> <span class="mono" id="iVolV"></span></label>
+      <label>fade in <input type="number" id="iFi" step="0.05" min="0" style="width:5em"> s</label>
+      <label>fade out <input type="number" id="iFo" step="0.05" min="0" style="width:5em"> s</label>
+      <label title="repeat the sound to fill the clip (for ambience beds)"><input type="checkbox" id="iLoop"> loop to fill</label>
+    </div>
+  </div>
+</div>
+{% endblock %}
+{% block script %}
+<script>
+const MID = new URLSearchParams(location.search).get("id");
+let M = null, SND = {}, CAT = "", sel = null, tool = "sel", pps = 60;
+const HEAD = 170;
+const fmt = t => { t = Math.max(0, t); const m = Math.floor(t / 60); return `${m}:${(t - m * 60).toFixed(2).padStart(5, "0")}`; };
+const dbGain = d => Math.pow(10, d / 20);
+const V = () => $("vid");
+const newId = () => Math.random().toString(36).slice(2, 10);
+
+/* ================= start view ================= */
+async function startView() {
+  $("startView").classList.remove("hidden");
+  const d = await FK.api("/api/mixes");
+  const r = $("renders");
+  r.innerHTML = d.renders.length ? "" : '<div class="dim">No rendered chains yet. Render one in Colour match first.</div>';
+  for (const x of d.renders) {
+    const row = document.createElement("div");
+    row.className = "row"; row.style.cssText = "padding:4px 0;border-top:1px solid var(--edge)";
+    row.innerHTML = `<span>${FK.when(x.created)}</span><span class="dim grow"></span><button class="small primary">Layer sounds</button>`;
+    row.querySelector(".grow").textContent = `${x.segments} segments: ${x.names.join(", ")}`;
+    row.querySelector("button").onclick = () => create({kind: "colormatch", session: x.session});
+    r.append(row);
+  }
+  $("libVid").innerHTML = "";
+  for (const v of d.videos) $("libVid").add(new Option(`${v.name}  (${FK.dur(v.duration)})`, v.id));
+  $("startLib").onclick = () => $("libVid").value && create({kind: "library", id: $("libVid").value});
+  const mx = $("mixes");
+  mx.innerHTML = d.mixes.length ? "" : '<div class="dim">None yet.</div>';
+  for (const x of d.mixes) {
+    const row = document.createElement("div");
+    row.className = "row"; row.style.cssText = "padding:4px 0;border-top:1px solid var(--edge)";
+    row.innerHTML = `<a href="/mix?id=${x.id}" class="nm"></a><span class="dim grow">${x.clips} clips · ${FK.dur(x.duration)} · ${FK.when(x.updated)}${x.outputs ? ` · ${x.outputs} render${x.outputs > 1 ? "s" : ""}` : ""}</span>
+      <button class="small danger">Delete</button>`;
+    row.querySelector(".nm").textContent = x.name;
+    row.querySelector("button").onclick = async () => { if (confirm("Delete this mix and its renders?")) { await FK.api(`/api/mixes/${x.id}`, {method: "DELETE"}); startView(); } };
+    mx.append(row);
+  }
+}
+async function create(video) {
+  try { const m = await FK.api("/api/mixes", {json: {video}}); location.href = `/mix?id=${m.id}`; } catch (e) { FK.fail(e); }
+}
+
+/* ================= editor ================= */
+async function editView() {
+  $("editView").classList.remove("hidden");
+  M = await FK.api(`/api/mixes/${MID}`);
+  if (!M.video_ok) FK.toast(M.video_error || "The video is missing", true);
+  $("mxName").value = M.name;
+  $("mxInfo").textContent = `· ${M.video_name} · ${fmt(M.duration)}${M.has_audio ? "" : " · no original audio"}`;
+  V().src = `/media/mix/${MID}/video`;
+  pps = Math.max(10, Math.min(400, ($("tlWrap").clientWidth - HEAD - 20) / Math.max(1, M.duration)));
+  $("zoom").value = zoomToSlider(pps);
+  Object.assign(SND, M.sounds);
+  renderOutputs();
+  await loadSounds();
+  render();
+  initAudio();
+  M.clips.forEach(c => buffer(c.sound));
+}
+$("mxName").onchange = () => { M.name = $("mxName").value; dirty(); };
+
+/* ---- zoom: slider 0..100 maps to 10..400 px per second, logarithmic ---- */
+const zoomToSlider = p => Math.round(Math.log(p / 10) / Math.log(40) * 100);
+$("zoom").oninput = () => {
+  const w = $("tlWrap"), centre = (w.scrollLeft + w.clientWidth / 2 - HEAD) / pps;
+  pps = 10 * Math.pow(40, $("zoom").value / 100);
+  render();
+  w.scrollLeft = Math.max(0, centre * pps + HEAD - w.clientWidth / 2);
+};
+
+/* ---- sound browser ---- */
+async function loadSounds() {
+  const d = await FK.api(`/api/sounds?q=${encodeURIComponent($("sq").value)}&category=${encodeURIComponent(CAT)}`);
+  if (!$("scat").options.length) {
+    $("scat").add(new Option("all categories", ""));
+    d.categories.forEach(c => $("scat").add(new Option(c, c)));
+  }
+  const box = $("sndList");
+  box.innerHTML = d.sounds.length ? "" : '<div class="dim" style="padding:6px">No sounds. Cut some in Sounds.</div>';
+  const au = loadSounds.au || (loadSounds.au = new Audio());
+  for (const s of d.sounds) {
+    SND[s.id] = {id: s.id, name: s.name, category: s.category, duration: s.duration, envelope: s.envelope, loop: s.loop};
+    const r = document.createElement("div");
+    r.className = "mx-snd"; r.draggable = true;
+    r.innerHTML = `<button class="small pv" title="preview">▶</button><div class="grow"><div class="nm"></div>
+      <div class="dim" style="font-size:11px">${esc(s.category)} · ${s.duration.toFixed(2)} s${s.loop ? " · loop" : ""}</div></div>
+      <button class="small add" title="add at the playhead">＋</button>`;
+    r.querySelector(".nm").textContent = s.name;
+    r.querySelector(".pv").onclick = () => { au.src = `/media/sound/${s.id}`; au.play(); };
+    r.querySelector(".add").onclick = () => addClip(s.id, selTrack(), V().currentTime);
+    r.ondragstart = e => { e.dataTransfer.setData("text/x-sound", String(s.id)); e.dataTransfer.effectAllowed = "copy"; };
+    box.append(r);
+  }
+}
+let sqT = null;
+$("sq").oninput = () => { clearTimeout(sqT); sqT = setTimeout(loadSounds, 200); };
+$("scat").onchange = () => { CAT = $("scat").value; loadSounds(); };
+function selTrack() {
+  const c = M.clips.find(x => x.id === sel);
+  return c ? c.track : M.tracks[0].id;
+}
+
+/* ---- rendering the timeline ---- */
+function segColor(k) { return `hsl(${(k * 137.5 + 210) % 360} 40% 32%)`; }
+function render() {
+  const tl = $("tl");
+  const W = Math.ceil(M.duration * pps) + 40;
+  tl.style.width = `${HEAD + W}px`;
+  tl.classList.toggle("mx-cut", tool === "cut");
+  tl.innerHTML = "";
+  // ruler
+  const ruler = row("mx-ruler", "<span class='dim'>time</span>", W);
+  const lane = ruler.querySelector(".mx-lane");
+  const step = [0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 30, 60, 120].find(s => s * pps >= 70) || 300;
+  for (let t = 0; t <= M.duration + 1e-6; t += step) {
+    const k = document.createElement("div"); k.className = "mx-tick"; k.style.left = `${t * pps}px`;
+    k.textContent = t >= 60 ? fmt(t).replace(/\.00$/, "") : `${+t.toFixed(2)}s`; lane.append(k);
+  }
+  lane.onmousedown = e => seek(tAt(e, lane));
+  tl.append(ruler);
+  // video row with segments between the markers
+  const vrow = row("mx-video", `<span>Video</span><span class="dim">${M.markers.length ? `${M.markers.length + 1} parts` : ""}</span>`, W);
+  const bounds = [0, ...M.markers.map(m => m.t), M.duration];
+  for (let k = 0; k + 1 < bounds.length; k++) {
+    const s = document.createElement("div"); s.className = "mx-seg";
+    s.style.left = `${bounds[k] * pps}px`; s.style.width = `${Math.max(1, (bounds[k + 1] - bounds[k]) * pps - 2)}px`;
+    s.style.background = segColor(k); s.textContent = M.markers.length ? (k ? M.markers[k - 1].label : "start") : M.video_name;
+    vrow.querySelector(".mx-lane").append(s);
+  }
+  tl.append(vrow);
+  // original audio
+  const orow = row("mx-track mx-orig", `<div class="row"><b>Original audio</b></div>
+      <div class="row"><input type="range" min="-30" max="12" step="0.5" class="ov"><button class="small om"></button></div>`, W);
+  orow.querySelector(".mx-lane").style.height = "30px";
+  const ov = orow.querySelector(".ov"), om = orow.querySelector(".om");
+  ov.value = M.original.volume_db; ov.title = `${M.original.volume_db} dB`;
+  om.textContent = M.original.mute ? "muted" : "mute";
+  if (!M.has_audio) { ov.disabled = om.disabled = true; orow.querySelector(".mx-lane").innerHTML = '<span class="dim" style="padding:6px;display:block">this video has no audio</span>'; }
+  ov.oninput = () => { M.original.volume_db = +ov.value; ov.title = `${ov.value} dB`; applyOrig(); dirty(); };
+  om.onclick = () => { M.original.mute = !M.original.mute; render(); applyOrig(); dirty(); };
+  tl.append(orow);
+  // sound tracks
+  for (const t of M.tracks) {
+    const r = row("mx-track", `<div class="row"><input class="tn" style="width:100%;font-size:12px"><button class="small tx" title="remove track">✕</button></div>
+      <div class="row"><input type="range" min="-30" max="12" step="0.5" class="tv"><button class="small tm"></button></div>`, W);
+    r.dataset.track = t.id;
+    const tn = r.querySelector(".tn"), tv = r.querySelector(".tv"), tm = r.querySelector(".tm");
+    tn.value = t.name; tn.onchange = () => { t.name = tn.value; dirty(); };
+    tv.value = t.volume_db; tv.title = `${t.volume_db} dB`;
+    tv.oninput = () => { t.volume_db = +tv.value; tv.title = `${tv.value} dB`; dirty(true); };
+    tm.textContent = t.mute ? "muted" : "mute";
+    tm.onclick = () => { t.mute = !t.mute; render(); dirty(true); };
+    r.querySelector(".tx").onclick = () => {
+      if (M.tracks.length < 2) return FK.toast("A mix needs at least one track.", true);
+      if (M.clips.some(c => c.track === t.id) && !confirm("Remove this track and its clips?")) return;
+      M.tracks = M.tracks.filter(x => x !== t); M.clips = M.clips.filter(c => c.track !== t.id); render(); dirty(true);
+    };
+    const ln = r.querySelector(".mx-lane");
+    ln.ondragover = e => { if ([...e.dataTransfer.types].includes("text/x-sound")) { e.preventDefault(); r.classList.add("drop"); } };
+    ln.ondragleave = () => r.classList.remove("drop");
+    ln.ondrop = e => { e.preventDefault(); r.classList.remove("drop"); addClip(+e.dataTransfer.getData("text/x-sound"), t.id, tAt(e, ln)); };
+    ln.onmousedown = e => { if (e.target === ln) { sel = null; seek(tAt(e, ln)); render(); } };
+    for (const c of M.clips.filter(c => c.track === t.id)) ln.append(clipEl(c));
+    tl.append(r);
+  }
+  // markers across all rows, the playhead and the cut guide
+  for (const m of M.markers) {
+    const k = document.createElement("div"); k.className = "mx-mark"; k.style.left = `${HEAD + m.t * pps}px`;
+    k.innerHTML = `<span>${esc(m.label)}</span>`; tl.append(k);
+  }
+  const ph = document.createElement("div"); ph.id = "ph"; tl.append(ph);
+  const cg = document.createElement("div"); cg.id = "cutGuide"; tl.append(cg);
+  movePlayhead();
+  inspector();
+}
+function row(cls, head, W) {
+  const r = document.createElement("div");
+  r.className = "mx-row " + cls;
+  r.innerHTML = `<div class="mx-head">${head}</div><div class="mx-lane" style="width:${W}px"></div>`;
+  return r;
+}
+const tAt = (e, lane) => Math.max(0, Math.min(M.duration, (e.clientX - lane.getBoundingClientRect().left) / pps));
+
+function clipEl(c) {
+  const s = SND[c.sound];
+  const d = document.createElement("div");
+  d.className = "mx-clip" + (c.id === sel ? " sel" : "") + (s ? "" : " missing");
+  d.style.left = `${c.start * pps}px`; d.style.width = `${Math.max(4, c.length * pps)}px`;
+  d.innerHTML = `<canvas></canvas><div class="fi" style="width:${c.fade_in * pps}px"></div><div class="fo" style="width:${c.fade_out * pps}px"></div>
+    <span class="nm"></span><div class="h l"></div><div class="h r"></div>`;
+  // edge handles shrink on short clips so there is always a middle to grab for moving
+  const hw = Math.max(2, Math.min(7, Math.floor(c.length * pps / 4)));
+  d.querySelectorAll(".h").forEach(h => h.style.width = `${hw}px`);
+  d.querySelector(".nm").textContent = (s ? s.name : "missing sound") + (c.loop ? " ⟳" : "");
+  d.title = `${s ? s.name : "missing"} · ${c.start.toFixed(2)}–${(c.start + c.length).toFixed(2)} s`;
+  requestAnimationFrame(() => drawClip(d.querySelector("canvas"), c, s));
+  d.onmousedown = e => clipDown(e, c, d);
+  d.onmousemove = e => {
+    if (tool !== "cut") return;
+    const g = $("cutGuide"); g.style.display = "block";
+    g.style.left = `${HEAD + snapT(tAt(e, d.parentElement), c) * pps}px`;
+  };
+  d.onmouseleave = () => { $("cutGuide").style.display = "none"; };
+  return d;
+}
+function drawClip(cv, c, s) {
+  if (!s || !s.envelope?.length) return;
+  const w = cv.width = cv.clientWidth, h = cv.height = cv.clientHeight;
+  const g = cv.getContext("2d");
+  g.fillStyle = "rgba(160,200,255,.75)";
+  const env = s.envelope, dur = s.duration || 1;
+  for (let x = 0; x < w; x++) {
+    let u = c.offset + x / pps;                      // time within the sound
+    if (c.loop) u = u % dur; else if (u > dur) break;
+    const a = env[Math.min(env.length - 1, Math.floor(u / dur * env.length))] * h / 2;
+    g.fillRect(x, h / 2 - a, 1, Math.max(1, 2 * a));
+  }
+  if (c.loop) {  // mark where the loop repeats
+    g.fillStyle = "rgba(255,255,255,.35)";
+    for (let t = dur - (c.offset % dur); t < c.length; t += dur) g.fillRect(t * pps, 0, 1, h);
+  }
+}
+
+/* ---- snapping: markers, playhead, 0, the end, other clips' edges ---- */
+function snapPoints(except) {
+  const pts = [0, M.duration, V().currentTime, ...M.markers.map(m => m.t)];
+  for (const c of M.clips) if (c !== except) pts.push(c.start, c.start + c.length);
+  return pts;
+}
+function snapT(t, except, e) {
+  if (!$("snap").checked || (e && e.altKey)) return t;
+  const tol = 8 / pps;
+  let best = t, bd = tol;
+  for (const p of snapPoints(except)) { const d = Math.abs(p - t); if (d < bd) { bd = d; best = p; } }
+  return best;
+}
+
+/* ---- clip interaction: select, move (also between tracks), trim either edge, cut ---- */
+function clipDown(e, c, el) {
+  e.stopPropagation(); e.preventDefault();
+  const lane = el.parentElement, t0 = tAt(e, lane);
+  if (tool === "cut") { split(c, snapT(t0, c, e)); return; }
+  sel = c.id;
+  const mode = e.target.classList.contains("l") ? "l" : e.target.classList.contains("r") ? "r" : "move";
+  const o = {...c}, s = SND[c.sound], sdur = s ? s.duration : Infinity;
+  document.querySelectorAll(".mx-clip.sel").forEach(x => x.classList.remove("sel")); el.classList.add("sel");
+  inspector();
+  let moved = false;
+  const mv = ev => {
+    const dt = (ev.clientX - e.clientX) / pps;
+    if (Math.abs(ev.clientX - e.clientX) > 2) moved = true;
+    if (!moved) return;
+    if (mode === "move") {
+      let st = Math.max(0, o.start + dt);
+      const a = snapT(st, c, ev), b = snapT(st + o.length, c, ev) - o.length;  // snap either edge
+      st = Math.abs(a - st) <= Math.abs(b - st) ? a : b;
+      c.start = Math.max(0, st);
+      const over = document.elementFromPoint(ev.clientX, ev.clientY)?.closest(".mx-track[data-track]");
+      if (over && over.dataset.track !== c.track) { c.track = over.dataset.track; over.querySelector(".mx-lane").append(el); }
+    } else if (mode === "r") {
+      let end = snapT(o.start + o.length + dt, c, ev);
+      let len = end - o.start;
+      if (!c.loop) len = Math.min(len, sdur - o.offset);  // can't play past the end of the sound
+      c.length = Math.max(0.05, len);
+    } else {
+      let st = snapT(o.start + dt, c, ev);
+      let d2 = st - o.start;
+      d2 = Math.max(d2, -o.start);                       // not before 0
+      if (!c.loop) d2 = Math.max(d2, -o.offset);         // can't reveal audio before the sound starts
+      d2 = Math.min(d2, o.length - 0.05);
+      c.start = o.start + d2; c.offset = Math.max(0, o.offset + d2); c.length = o.length - d2;
+    }
+    c.fade_in = Math.min(c.fade_in, c.length / 2); c.fade_out = Math.min(c.fade_out, c.length / 2);
+    el.style.left = `${c.start * pps}px`; el.style.width = `${Math.max(4, c.length * pps)}px`;
+    inspector();
+  };
+  const up = () => {
+    removeEventListener("mousemove", mv);
+    if (moved) { render(); dirty(true); }
+  };
+  addEventListener("mousemove", mv); addEventListener("mouseup", up, {once: true});
+}
+function split(c, t) {
+  if (t <= c.start + 0.02 || t >= c.start + c.length - 0.02) return;
+  const at = t - c.start;
+  const b = {...c, id: newId(), start: t, offset: c.offset + at, length: c.length - at, fade_in: 0};
+  c.length = at; c.fade_out = 0;
+  M.clips.push(b);
+  sel = b.id; render(); dirty(true);
+}
+function addClip(sid, track, t) {
+  const s = SND[sid];
+  if (!s) return;
+  const start = snapT(Math.max(0, Math.min(M.duration - 0.05, t)));
+  const c = {id: newId(), track, sound: sid, start, offset: 0, length: Math.min(s.duration, M.duration - start),
+             loop: false, volume_db: 0, fade_in: 0, fade_out: 0};
+  M.clips.push(c); sel = c.id; buffer(sid); render(); dirty(true);
+}
+
+/* ---- tools and keys ---- */
+function setTool(t) {
+  tool = t; $("toolSel").classList.toggle("on", t === "sel"); $("toolCut").classList.toggle("on", t === "cut");
+  $("tl").classList.toggle("mx-cut", t === "cut"); $("cutGuide") && ($("cutGuide").style.display = "none");
+}
+$("toolSel").onclick = () => setTool("sel");
+$("toolCut").onclick = () => setTool("cut");
+function splitAtPlayhead() {
+  const t = V().currentTime, c = M.clips.find(x => x.id === sel);
+  const targets = c && t > c.start && t < c.start + c.length ? [c] : M.clips.filter(x => t > x.start && t < x.start + x.length);
+  if (!targets.length) return FK.toast("No clip under the playhead.", true);
+  targets.forEach(x => split(x, t));
+}
+$("splitBtn").onclick = splitAtPlayhead;
+function duplicate() {
+  const c = M.clips.find(x => x.id === sel);
+  if (!c) return;
+  const d = {...c, id: newId(), start: Math.min(M.duration - 0.05, c.start + c.length)};
+  M.clips.push(d); sel = d.id; render(); dirty(true);
+}
+$("dupBtn").onclick = duplicate;
+function removeSel() {
+  if (!sel) return;
+  M.clips = M.clips.filter(x => x.id !== sel); sel = null; render(); dirty(true);
+}
+$("delBtn").onclick = removeSel;
+$("addTrack").onclick = () => {
+  let n = M.tracks.length + 1;
+  while (M.tracks.some(t => t.id === `t${n}`)) n++;
+  M.tracks.push({id: `t${n}`, name: `Track ${n}`, volume_db: 0, mute: false}); render(); dirty();
+};
+document.addEventListener("keydown", e => {
+  if (!M || e.target.matches("input, select, textarea")) return;
+  const k = e.key.toLowerCase();
+  if (k === " ") { e.preventDefault(); $("playBtn").click(); }
+  else if (k === "v") setTool("sel");
+  else if (k === "c" && !e.ctrlKey) setTool("cut");
+  else if (k === "s" && !e.ctrlKey) { e.preventDefault(); splitAtPlayhead(); }
+  else if (k === "d" && e.ctrlKey) { e.preventDefault(); duplicate(); }
+  else if (k === "delete" || k === "backspace") { e.preventDefault(); removeSel(); }
+  else if ((k === "arrowleft" || k === "arrowright") && sel) {
+    e.preventDefault();
+    const c = M.clips.find(x => x.id === sel), step = e.shiftKey ? 0.1 : 1 / (M.fps || 16);
+    c.start = Math.max(0, c.start + (k === "arrowleft" ? -step : step)); render(); dirty(true);
+  }
+  else if (k === "escape") setTool("sel");
+});
+
+/* ---- inspector for the selected clip ---- */
+function inspector() {
+  const c = M.clips.find(x => x.id === sel);
+  $("insp").classList.toggle("hidden", !c);
+  if (!c) return;
+  const s = SND[c.sound];
+  $("iName").textContent = s ? s.name : "missing sound";
+  $("iInfo").textContent = s ? ` · ${s.category} · sound is ${s.duration.toFixed(2)} s` : "";
+  $("iStart").value = c.start.toFixed(2); $("iLen").value = c.length.toFixed(2); $("iOff").value = c.offset.toFixed(2);
+  $("iVol").value = c.volume_db; $("iVolV").textContent = `${c.volume_db > 0 ? "+" : ""}${c.volume_db} dB`;
+  $("iFi").value = c.fade_in; $("iFo").value = c.fade_out; $("iLoop").checked = c.loop;
+}
+function edit(fn) { const c = M.clips.find(x => x.id === sel); if (!c) return; fn(c, SND[c.sound]); render(); dirty(true); }
+$("iStart").onchange = () => edit(c => c.start = Math.max(0, +$("iStart").value));
+$("iLen").onchange = () => edit((c, s) => c.length = Math.max(0.05, c.loop || !s ? +$("iLen").value : Math.min(+$("iLen").value, s.duration - c.offset)));
+$("iOff").onchange = () => edit((c, s) => c.offset = Math.max(0, c.loop || !s ? +$("iOff").value : Math.min(+$("iOff").value, s.duration - 0.05)));
+$("iVol").oninput = () => { const c = M.clips.find(x => x.id === sel); if (!c) return; c.volume_db = +$("iVol").value; $("iVolV").textContent = `${c.volume_db} dB`; dirty(true); };
+$("iFi").onchange = () => edit(c => c.fade_in = Math.max(0, Math.min(+$("iFi").value, c.length / 2)));
+$("iFo").onchange = () => edit(c => c.fade_out = Math.max(0, Math.min(+$("iFo").value, c.length / 2)));
+$("iLoop").onchange = () => edit((c, s) => { c.loop = $("iLoop").checked; if (!c.loop && s) c.length = Math.min(c.length, s.duration - c.offset); });
+
+/* ---- saving (debounced) ---- */
+let saveT = null;
+function dirty(resched) {
+  $("saveState").textContent = "unsaved…";
+  clearTimeout(saveT);
+  saveT = setTimeout(async () => {
+    try {
+      const r = await FK.api(`/api/mixes/${MID}`, {method: "PUT", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({name: M.name, original: M.original, tracks: M.tracks, clips: M.clips})});
+      Object.assign(SND, r.sounds);
+      $("saveState").textContent = "saved";
+    } catch (e) { $("saveState").textContent = "not saved"; FK.fail(e); }
+  }, 600);
+  if (resched && !V().paused) schedule();
+}
+
+/* ---- preview: the video is the clock; sounds are scheduled with Web Audio ---- */
+let ctx = null, vgain = null, live = [];
+const bufs = {};
+function initAudio() {
+  ctx = new AudioContext();
+  vgain = ctx.createGain();
+  ctx.createMediaElementSource(V()).connect(vgain).connect(ctx.destination);
+  applyOrig();
+}
+function applyOrig() { if (vgain) vgain.gain.value = M.original.mute ? 0 : dbGain(M.original.volume_db); }
+function buffer(id) {
+  if (!bufs[id]) bufs[id] = fetch(`/media/sound/${id}`).then(r => r.arrayBuffer()).then(b => ctx.decodeAudioData(b)).catch(() => null);
+  return bufs[id];
+}
+function stopAll() { for (const n of live) { try { n.stop(); } catch {} } live = []; }
+let schedN = 0;
+async function schedule() {
+  stopAll();
+  const my = ++schedN;
+  await Promise.all(M.clips.map(c => buffer(c.sound)));
+  if (my !== schedN || V().paused) return;
+  const T = V().currentTime, now = ctx.currentTime;
+  const tracks = Object.fromEntries(M.tracks.map(t => [t.id, t]));
+  for (const c of M.clips) {
+    const t = tracks[c.track];
+    const b = await bufs[c.sound];
+    if (!t || t.mute || !b || c.start + c.length <= T) continue;
+    const into = Math.max(0, T - c.start), when = now + Math.max(0, c.start - T), rest = c.length - into;
+    let off = c.offset + into;
+    if (c.loop) off %= b.duration; else if (off >= b.duration) continue;
+    const src = ctx.createBufferSource(), g = ctx.createGain();
+    src.buffer = b; src.loop = c.loop;
+    const vol = dbGain(t.volume_db + c.volume_db);
+    const env = u => vol * Math.min(1, c.fade_in ? u / c.fade_in : 1, c.fade_out ? (c.length - u) / c.fade_out : 1);
+    g.gain.setValueAtTime(Math.max(0, env(into)), when);
+    if (c.fade_in && into < c.fade_in) g.gain.linearRampToValueAtTime(vol, when + (c.fade_in - into));
+    if (c.fade_out) {
+      const fs = Math.max(into, c.length - c.fade_out);
+      g.gain.setValueAtTime(Math.max(0, env(fs)), when + (fs - into));
+      g.gain.linearRampToValueAtTime(0, when + rest);
+    }
+    src.connect(g).connect(ctx.destination);
+    src.start(when, off);
+    src.stop(when + rest);
+    live.push(src);
+  }
+}
+$("playBtn").onclick = async () => {
+  if (V().paused) { await ctx.resume(); V().play(); } else V().pause();
+};
+V().addEventListener("play", () => { $("playBtn").textContent = "Pause"; schedule(); });
+V().addEventListener("pause", () => { $("playBtn").textContent = "Play"; stopAll(); });
+V().addEventListener("seeked", () => { if (!V().paused) schedule(); movePlayhead(); });
+function seek(t) { V().currentTime = t; movePlayhead(); }
+function movePlayhead() {
+  const ph = $("ph");
+  if (ph) ph.style.left = `${HEAD + V().currentTime * pps}px`;
+  $("clock").textContent = `${fmt(V().currentTime)} / ${fmt(M.duration)}`;
+}
+(function tick() {
+  if (M && !V().paused) {
+    movePlayhead();
+    const w = $("tlWrap"), x = HEAD + V().currentTime * pps;
+    if (x > w.scrollLeft + w.clientWidth - 40 || x < w.scrollLeft + HEAD) w.scrollLeft = x - HEAD - 40;
+  }
+  requestAnimationFrame(tick);
+})();
+
+/* ---- render ---- */
+function renderOutputs() {
+  const o = M.outputs || [];
+  $("outputs").innerHTML = o.length ? `Rendered: <a href="/api/mixes/${MID}/file/${encodeURIComponent(o[0].file)}" target="_blank">${esc(o[0].file)}</a>
+    · <a href="/api/mixes/${MID}/file/${encodeURIComponent(o[0].file)}?dl=1">download</a>${o.length > 1 ? ` · ${o.length - 1} earlier` : ""}` : "";
+}
+$("renderBtn").onclick = async () => {
+  clearTimeout(saveT);
+  try {
+    await FK.api(`/api/mixes/${MID}`, {method: "PUT", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({name: M.name, original: M.original, tracks: M.tracks, clips: M.clips})});
+    const j = await FK.runJob(`/api/mixes/${MID}/render`, {library: $("toLib").checked}, $("bar"), $("barLbl"));
+    FK.toast(`Rendered ${j.result.file}`);
+    M = Object.assign(M, {outputs: (await FK.api(`/api/mixes/${MID}`)).outputs});
+    renderOutputs();
+  } catch (e) { FK.fail(e); }
+};
+window.addEventListener("resize", () => M && render());
+
+(MID ? editView() : startView()).catch(FK.fail);
+</script>
+{% endblock %}

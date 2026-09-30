@@ -1,0 +1,495 @@
+{% extends "base.html" %}
+{% block main %}
+<style>
+  .sd-tabs button.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .sd-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; margin-top: 10px; }
+  .sd-card { background: var(--panel2); border: 1px solid var(--edge); border-radius: 8px; padding: 8px; position: relative; }
+  .sd-card.playing { border-color: var(--accent); }
+  .sd-card canvas { width: 100%; height: 44px; display: block; cursor: pointer; }
+  .sd-card .nm { font-weight: 600; overflow-wrap: anywhere; }
+  .sd-chip { display: inline-block; font-size: 11px; padding: 0 6px; border-radius: 8px; background: var(--panel); border: 1px solid var(--edge); margin: 2px 2px 0 0; }
+  .sd-chip.cat { border-color: var(--accent); color: var(--text); }
+  .sd-cats button { margin: 2px; }
+  .sd-cats button.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .sd-wave { position: relative; user-select: none; }
+  .sd-wave canvas { display: block; width: 100%; }
+  #wv { height: 170px; cursor: text; border-radius: 6px; }
+  #ov { height: 36px; cursor: pointer; border-radius: 4px; margin-bottom: 6px; }
+  .sd-list { max-height: 360px; overflow: auto; margin-top: 8px; }
+  .sd-list .row { padding: 4px 0; border-top: 1px solid var(--edge); flex-wrap: nowrap; }
+  .sd-list input[type=text] { min-width: 120px; flex: 1; }
+  .sd-num { width: 6.5em; }
+  :root { --wave: #3987e5; --sel: rgba(57,135,229,.22); --onset: #fab219; --found: #3fb67a; }
+</style>
+
+<h1>Sounds</h1>
+<p class="dim" style="margin-top:-6px">Cut audio into clips and keep them in a sound library to layer into your videos.</p>
+<div class="row sd-tabs" style="margin-bottom:12px">
+  <button data-tab="lib" class="on">Library</button>
+  <button data-tab="cut">Cut new sounds</button>
+</div>
+
+<section id="tab-lib">
+  <div class="card">
+    <div class="row">
+      <input id="q" placeholder="Search names, tags, notes" style="min-width:200px" class="grow">
+      <label class="dim"><input type="checkbox" id="favOnly"> favourites</label>
+      <span class="dim" id="libCount"></span>
+      <button class="small" id="rescanBtn" title="pick up audio files you copied into the sound folder yourself">Rescan folder</button>
+    </div>
+    <div class="sd-cats" id="cats" style="margin-top:8px"></div>
+    <div class="dim mono" id="folder" style="margin-top:6px"></div>
+    <div class="sd-grid" id="sgrid"></div>
+  </div>
+</section>
+
+<section id="tab-cut" hidden>
+  <div class="card">
+    <div class="row">
+      <b>Source</b>
+      <select id="src" style="max-width:420px" class="grow"><option value="">Choose a video with audio, or an audio file…</option></select>
+      <button id="upBtn">Upload audio files</button><input type="file" id="upFile" accept="audio/*,.wav,.mp3,.flac,.ogg,.m4a,.aif,.aiff,.opus" multiple hidden>
+    </div>
+    <div class="row"><progress id="bar" hidden></progress><span id="barLbl" class="dim"></span></div>
+  </div>
+
+  <div class="card hidden" id="editor">
+    <div class="row" style="margin-bottom:6px"><b id="srcName"></b><span class="dim" id="srcInfo"></span></div>
+    <div class="sd-wave"><canvas id="ov" title="whole file: click or drag to move the view"></canvas></div>
+    <div class="sd-wave"><canvas id="wv" title="drag to select · drag an edge to adjust · double-click a found sound to select it · wheel to zoom, shift+wheel to scroll"></canvas></div>
+    <div class="row" style="margin-top:8px">
+      <button class="primary" id="playSel" title="space">▶ Selection</button>
+      <button id="playCur">▶ From cursor</button>
+      <button id="stopBtn">■</button>
+      <label class="dim"><input type="checkbox" id="loopSel"> loop</label>
+      <span class="dim">|</span>
+      <button class="small" id="zoomIn">＋</button><button class="small" id="zoomOut">－</button>
+      <button class="small" id="zoomSel">zoom to selection</button><button class="small" id="zoomAll">whole file</button>
+      <span class="grow"></span>
+      <span class="mono" id="clock">0:00.000</span>
+    </div>
+    <div class="row" style="margin-top:6px">
+      <label>Selection <input type="number" id="selA" class="sd-num" step="0.01" min="0"> to <input type="number" id="selB" class="sd-num" step="0.01" min="0"> s</label>
+      <span class="dim" id="selLen"></span>
+      <label class="dim"><input type="checkbox" id="snap" checked> snap to onsets</label>
+    </div>
+    <div class="row" style="margin-top:6px">
+      <label title="a gap is anything this many dB quieter than the file's loud parts">Gaps are
+        <input type="range" id="below" min="10" max="60" step="1" value="35" style="width:120px"> <span class="mono" id="belowVal">35</span> dB below the loud parts</label>
+      <label>and at least <input type="number" id="minGap" class="sd-num" min="0.02" max="10" step="0.05" value="0.3"> s</label>
+      <span class="dim" id="detInfo"></span>
+    </div>
+  </div>
+
+  <div class="card hidden" id="saveCard">
+    <div class="row"><b>Save the selection</b></div>
+    <div class="row" style="margin-top:6px">
+      <input id="sName" placeholder="Name" style="min-width:180px" class="grow">
+      <select id="sCat"></select>
+      <input id="sTags" placeholder="tags, comma separated" style="min-width:160px">
+      <label class="dim"><input type="checkbox" id="sLoop"> loopable</label>
+    </div>
+    <div class="row" style="margin-top:6px">
+      <label class="dim" title="shrink the clip to where the sound is, keeping a few ms either side"><input type="checkbox" id="oTrim" checked> trim silence at the ends</label>
+      <label class="dim" title="5 ms fades stop clicks at the cut points"><input type="checkbox" id="oFade" checked> tiny fades</label>
+      <label class="dim" title="raise or lower so the loudest point is -1 dBFS"><input type="checkbox" id="oNorm"> normalise peak to -1 dB</label>
+      <span class="grow"></span>
+      <button class="primary" id="saveBtn" title="Enter">Save to library</button>
+    </div>
+  </div>
+
+  <div class="card hidden" id="foundCard">
+    <div class="row"><b>Found sounds</b><span class="dim" id="foundCount"></span><span class="grow"></span>
+      <button class="small" id="allBtn">Tick all</button><button class="small" id="noneBtn">Tick none</button>
+      <button class="primary" id="saveMany">Save ticked</button></div>
+    <div class="dim">Each sound between the gaps, ready to save on its own. "Select" loads it into the editor to fine-tune.</div>
+    <div class="sd-list" id="found"></div>
+  </div>
+</section>
+{% endblock %}
+{% block script %}
+<script>
+let CATS = [], LIB = [], A = null, KEY = "", CUR_CAT = "";
+const fmt = t => { t = Math.max(0, t || 0); const m = Math.floor(t / 60); return `${m}:${(t - m * 60).toFixed(3).padStart(6, "0")}`; };
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+
+/* ---- tabs ---- */
+function tab(name) {
+  document.querySelectorAll(".sd-tabs button").forEach(b => b.classList.toggle("on", b.dataset.tab === name));
+  $("tab-lib").hidden = name !== "lib";
+  $("tab-cut").hidden = name !== "cut";
+  history.replaceState(null, "", "#" + name + (name === "cut" && KEY ? "=" + encodeURIComponent(KEY) : ""));
+  if (name === "cut") setTimeout(draw, 0);
+}
+document.querySelectorAll(".sd-tabs button").forEach(b => b.onclick = () => tab(b.dataset.tab));
+
+/* ================= library ================= */
+const libAudio = new Audio();
+let playingId = null;
+libAudio.onended = () => { playingId = null; renderLib(); };
+async function loadLib() {
+  const qs = new URLSearchParams({q: $("q").value, category: CUR_CAT, fav: $("favOnly").checked ? "1" : ""});
+  const d = await FK.api("/api/sounds?" + qs);
+  LIB = d.sounds; CATS = d.categories;
+  $("folder").textContent = "Sound folder: " + d.folder;
+  renderCats(); renderLib(); fillCatSelect($("sCat"));
+}
+function renderCats() {
+  const box = $("cats");
+  box.innerHTML = "";
+  for (const c of ["", ...CATS]) {
+    const b = document.createElement("button");
+    b.className = "small" + (c === CUR_CAT ? " on" : "");
+    b.textContent = c || "all";
+    b.onclick = () => { CUR_CAT = c; loadLib(); };
+    box.append(b);
+  }
+}
+function fillCatSelect(sel, value) {
+  const v = value ?? sel.value;
+  sel.innerHTML = "";
+  for (const c of CATS) sel.add(new Option(c, c));
+  if (v && CATS.includes(v)) sel.value = v;
+}
+function drawEnvelope(cv, env, on) {
+  const w = cv.width = cv.clientWidth * devicePixelRatio, h = cv.height = cv.clientHeight * devicePixelRatio;
+  const g = cv.getContext("2d");
+  g.clearRect(0, 0, w, h);
+  g.fillStyle = on ? css("--accent") : css("--wave");
+  const n = env.length || 1;
+  for (let i = 0; i < n; i++) {
+    const x = i / n * w, bw = Math.max(1, w / n - 1), a = (env[i] || 0) * h / 2;
+    g.fillRect(x, h / 2 - a, bw, Math.max(1, 2 * a));
+  }
+}
+function renderLib() {
+  const box = $("sgrid");
+  box.innerHTML = LIB.length ? "" : '<div class="dim">No sounds yet. Open "Cut new sounds" to make some.</div>';
+  $("libCount").textContent = `${LIB.length} sound${LIB.length === 1 ? "" : "s"}`;
+  for (const s of LIB) {
+    const d = document.createElement("div");
+    d.className = "sd-card" + (playingId === s.id ? " playing" : "");
+    d.innerHTML = `<canvas title="click to play"></canvas>
+      <div class="row" style="margin-top:4px;flex-wrap:nowrap"><span class="nm grow"></span>
+        <button class="small fav" title="favourite">${s.fav ? "♥" : "♡"}</button></div>
+      <div class="dim">${s.duration.toFixed(2)} s · ${s.level ?? "?"} dBFS${s.loop ? " · loop" : ""}</div>
+      <div class="chips"></div>
+      <div class="row" style="margin-top:6px">
+        <button class="small edit">Edit</button>
+        <a class="small" href="/media/sound/${s.id}?dl=1">Download</a>
+        ${s.source ? '<button class="small src" title="open the source at this clip">Source</button>' : ""}
+        <span class="grow"></span><button class="small danger del">Delete</button></div>`;
+    d.querySelector(".nm").textContent = s.name;
+    const chips = d.querySelector(".chips");
+    [s.category, ...s.tags].forEach((t, i) => { const c = document.createElement("span"); c.className = "sd-chip" + (i ? "" : " cat"); c.textContent = t; chips.append(c); });
+    const cv = d.querySelector("canvas");
+    requestAnimationFrame(() => drawEnvelope(cv, s.envelope, playingId === s.id));
+    cv.onclick = () => {
+      if (playingId === s.id) { libAudio.pause(); playingId = null; }
+      else { libAudio.src = `/media/sound/${s.id}`; libAudio.loop = s.loop; libAudio.play(); playingId = s.id; }
+      renderLib();
+    };
+    d.querySelector(".fav").onclick = () => patch(s.id, {fav: !s.fav});
+    d.querySelector(".del").onclick = async () => {
+      if (!confirm(`Delete "${s.name}"? The file moves to the sound folder's _trash.`)) return;
+      await FK.api(`/api/sounds/${s.id}`, {method: "DELETE"}); loadLib();
+    };
+    d.querySelector(".edit").onclick = () => editCard(d, s);
+    const sb = d.querySelector(".src");
+    if (sb) sb.onclick = () => openSource(s.source, s.source_start, s.source_end);
+    box.append(d);
+  }
+}
+async function patch(id, body) {
+  try { await FK.api(`/api/sounds/${id}`, {method: "PATCH", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)}); loadLib(); }
+  catch (e) { FK.fail(e); }
+}
+function editCard(d, s) {
+  d.innerHTML = `<div class="col">
+    <input class="n" placeholder="name"><select class="c"></select>
+    <input class="t" placeholder="tags, comma separated"><input class="o" placeholder="notes">
+    <label class="dim"><input type="checkbox" class="l"> loopable</label>
+    <div class="row"><button class="small primary ok">Save</button><button class="small no">Cancel</button></div></div>`;
+  d.querySelector(".n").value = s.name; d.querySelector(".t").value = s.tags.join(", ");
+  d.querySelector(".o").value = s.notes || ""; d.querySelector(".l").checked = s.loop;
+  fillCatSelect(d.querySelector(".c"), s.category);
+  d.querySelector(".no").onclick = renderLib;
+  d.querySelector(".ok").onclick = () => patch(s.id, {name: d.querySelector(".n").value, category: d.querySelector(".c").value,
+    tags: d.querySelector(".t").value, notes: d.querySelector(".o").value, loop: d.querySelector(".l").checked});
+}
+let qT = null;
+$("q").oninput = () => { clearTimeout(qT); qT = setTimeout(loadLib, 200); };
+$("favOnly").onchange = loadLib;
+$("rescanBtn").onclick = async () => {
+  try { const j = await FK.runJob("/api/sounds/rescan", {}); FK.toast(`Added ${j.result.added}, removed ${j.result.removed}`); loadLib(); }
+  catch (e) { FK.fail(e); }
+};
+
+/* ================= cutter ================= */
+const au = new Audio();
+let view = {t0: 0, t1: 1}, sel = null, cursor = 0, stopAt = null, loopA = null;
+async function loadSources(pick) {
+  const d = await FK.api("/api/sounds/sources");
+  const s = $("src"), cur = pick ?? s.value;
+  while (s.children.length > 1) s.lastChild.remove();  // groups too: `length = 1` would leave empty group headings
+  for (const [label, kind] of [["Audio files", "audio file"], ["Videos with audio", "video"]]) {
+    const items = d.sources.filter(x => x.kind === kind);
+    if (!items.length) continue;
+    const g = document.createElement("optgroup"); g.label = label;
+    for (const x of items) g.append(new Option(x.name + (x.duration ? `  (${FK.dur(x.duration)})` : ""), x.key));
+    s.append(g);
+  }
+  if (cur && [...s.options].some(o => o.value === cur)) s.value = cur;
+}
+$("src").onchange = () => $("src").value && openSource($("src").value);
+$("upBtn").onclick = () => $("upFile").click();
+$("upFile").onchange = async () => {
+  const files = [...$("upFile").files];
+  if (!files.length) return;
+  const fd = new FormData(); files.forEach(f => fd.append("audio", f));
+  try {
+    const r = await FK.api("/api/sounds/sources", {method: "POST", body: fd});
+    await loadSources(r.keys[0]); openSource(r.keys[0]);
+  } catch (e) { FK.fail(e); }
+  $("upFile").value = "";
+};
+
+async function openSource(key, a, b) {
+  tab("cut");
+  KEY = key;
+  await loadSources(key);
+  try { await FK.runJob("/api/sounds/analyze", {key}, $("bar"), $("barLbl")); } catch (e) { return FK.fail(e); }
+  au.src = `/media/sound-source?key=${encodeURIComponent(key)}`;
+  await refresh();
+  view = {t0: 0, t1: A.duration};
+  sel = a != null ? {a, b} : null; cursor = a || 0;
+  if (sel) zoomTo(Math.max(0, a - (b - a)), Math.min(A.duration, b + (b - a)));
+  $("editor").classList.remove("hidden"); $("saveCard").classList.remove("hidden"); $("foundCard").classList.remove("hidden");
+  $("sName").value = "";
+  history.replaceState(null, "", "#cut=" + encodeURIComponent(key));
+  syncSel(); draw();
+}
+async function refresh() {
+  const qs = new URLSearchParams({key: KEY, below: $("below").value, min_gap: $("minGap").value});
+  A = await FK.api("/api/sounds/analysis?" + qs);
+  $("srcName").textContent = A.name;
+  $("srcInfo").textContent = `· ${fmt(A.duration)} · loud parts ${A.loud} dBFS · noise floor ${A.floor} dBFS`;
+  $("detInfo").textContent = `gap threshold ${A.threshold} dBFS · ${A.sounds.length} sounds · ${A.onsets.length} onsets`;
+  renderFound(); draw();
+}
+let dT = null;
+$("below").oninput = () => { $("belowVal").textContent = $("below").value; clearTimeout(dT); dT = setTimeout(refresh, 150); };
+$("minGap").onchange = refresh;
+
+/* ---- drawing ---- */
+function prep(cv) {
+  const w = cv.width = Math.round(cv.clientWidth * devicePixelRatio), h = cv.height = Math.round(cv.clientHeight * devicePixelRatio);
+  const g = cv.getContext("2d"); g.clearRect(0, 0, w, h);
+  return [g, w, h];
+}
+function drawWave(g, w, h, t0, t1, full) {
+  const W = A.wave, n = W.lo.length, step = W.step;
+  const x = t => (t - t0) / (t1 - t0) * w;
+  // gaps shaded
+  g.fillStyle = "rgba(0,0,0,.35)";
+  for (const [a, b] of A.gaps) if (b > t0 && a < t1) g.fillRect(x(a), 0, x(b) - x(a), h);
+  // threshold guide
+  const amp = Math.pow(10, A.threshold / 20) * h / 2;
+  if (!full) {
+    g.strokeStyle = "rgba(255,255,255,.18)"; g.setLineDash([4, 4]); g.beginPath();
+    g.moveTo(0, h / 2 - amp); g.lineTo(w, h / 2 - amp); g.moveTo(0, h / 2 + amp); g.lineTo(w, h / 2 + amp); g.stroke(); g.setLineDash([]);
+  }
+  // waveform: min/max per pixel column
+  g.fillStyle = css("--wave");
+  for (let px = 0; px < w; px++) {
+    const i0 = Math.max(0, Math.floor((t0 + px / w * (t1 - t0)) / step)), i1 = Math.min(n, Math.ceil((t0 + (px + 1) / w * (t1 - t0)) / step));
+    if (i1 <= i0) continue;
+    let lo = 1, hi = -1;
+    for (let i = i0; i < i1; i++) { if (W.lo[i] < lo) lo = W.lo[i]; if (W.hi[i] > hi) hi = W.hi[i]; }
+    const y0 = h / 2 - hi * h / 2, y1 = h / 2 - lo * h / 2;
+    g.fillRect(px, y0, 1, Math.max(1, y1 - y0));
+  }
+  if (full) return;
+  // found sounds along the bottom, onsets along the top
+  g.fillStyle = css("--found");
+  for (const s of A.sounds) if (s.end > t0 && s.start < t1) g.fillRect(x(s.start), h - 4, Math.max(2, x(s.end) - x(s.start)), 4);
+  g.fillStyle = css("--onset");
+  for (const t of A.onsets) if (t >= t0 && t <= t1) g.fillRect(x(t), 0, Math.max(1, devicePixelRatio), 10 * devicePixelRatio);
+}
+function draw() {
+  if (!A || $("tab-cut").hidden) return;
+  const [g, w, h] = prep($("wv"));
+  const {t0, t1} = view, x = t => (t - t0) / (t1 - t0) * w;
+  drawWave(g, w, h, t0, t1, false);
+  if (sel) {
+    g.fillStyle = css("--sel"); g.fillRect(x(sel.a), 0, x(sel.b) - x(sel.a), h);
+    g.fillStyle = css("--accent"); g.fillRect(x(sel.a) - 1, 0, 2 * devicePixelRatio, h); g.fillRect(x(sel.b) - 1, 0, 2 * devicePixelRatio, h);
+  }
+  const pt = !au.paused ? au.currentTime : cursor;
+  g.fillStyle = "#fff"; g.fillRect(x(pt), 0, Math.max(1, devicePixelRatio), h);
+  // time ticks
+  g.fillStyle = css("--dim"); g.font = `${10 * devicePixelRatio}px system-ui`;
+  const span = t1 - t0, stepT = [0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 30, 60, 120, 300].find(s => span / s <= 10) || 600;
+  for (let t = Math.ceil(t0 / stepT) * stepT; t <= t1; t += stepT) g.fillText(t >= 60 ? fmt(t).replace(/0+$/, "").replace(/\.$/, "") : `${+t.toFixed(2)}s`, x(t) + 3, h - 8 * devicePixelRatio);
+  // overview
+  const [og, ow, oh] = prep($("ov"));
+  drawWave(og, ow, oh, 0, A.duration, true);
+  og.strokeStyle = css("--accent"); og.lineWidth = 2;
+  og.strokeRect(view.t0 / A.duration * ow + 1, 1, Math.max(3, (view.t1 - view.t0) / A.duration * ow - 2), oh - 2);
+  if (sel) { og.fillStyle = css("--sel"); og.fillRect(sel.a / A.duration * ow, 0, (sel.b - sel.a) / A.duration * ow, oh); }
+}
+window.addEventListener("resize", draw);
+
+/* ---- view: zoom and scroll ---- */
+function zoomTo(t0, t1) {
+  const d = A.duration, span = Math.min(d, Math.max(0.05, t1 - t0));
+  t0 = Math.max(0, Math.min(d - span, t0));
+  view = {t0, t1: t0 + span}; draw();
+}
+function zoom(f, at) { const {t0, t1} = view; at = at ?? (t0 + t1) / 2; zoomTo(at - (at - t0) * f, at + (t1 - at) * f); }
+$("zoomIn").onclick = () => zoom(0.5);
+$("zoomOut").onclick = () => zoom(2);
+$("zoomAll").onclick = () => zoomTo(0, A.duration);
+$("zoomSel").onclick = () => sel && zoomTo(sel.a - (sel.b - sel.a) * 0.15, sel.b + (sel.b - sel.a) * 0.15);
+const tAt = (cv, e) => { const r = cv.getBoundingClientRect(); return view.t0 + (e.clientX - r.left) / r.width * (view.t1 - view.t0); };
+$("wv").addEventListener("wheel", e => {
+  e.preventDefault();
+  if (e.shiftKey || Math.abs(e.deltaX) > Math.abs(e.deltaY)) { const d = (e.deltaX || e.deltaY) / 800 * (view.t1 - view.t0); zoomTo(view.t0 + d, view.t1 + d); }
+  else zoom(e.deltaY > 0 ? 1.25 : 0.8, tAt($("wv"), e));
+}, {passive: false});
+function ovMove(e) {
+  const r = $("ov").getBoundingClientRect(), t = (e.clientX - r.left) / r.width * A.duration, span = view.t1 - view.t0;
+  zoomTo(t - span / 2, t + span / 2);
+}
+$("ov").onmousedown = e => { ovMove(e); const mv = ev => ovMove(ev); addEventListener("mousemove", mv); addEventListener("mouseup", () => removeEventListener("mousemove", mv), {once: true}); };
+
+/* ---- selection ---- */
+function snapT(t) {
+  if (!$("snap").checked || !A) return t;
+  const tol = 8 / $("wv").clientWidth * (view.t1 - view.t0);
+  let best = t, bd = tol;
+  for (const o of A.onsets) { const d = Math.abs(o - t); if (d < bd) { bd = d; best = o; } }
+  return best;
+}
+$("wv").onmousedown = e => {
+  if (!A) return;
+  const t = tAt($("wv"), e), px = (view.t1 - view.t0) / $("wv").clientWidth;
+  let mode = "new", anchor = t;
+  if (sel && Math.abs(t - sel.a) < 5 * px) { mode = "a"; }
+  else if (sel && Math.abs(t - sel.b) < 5 * px) { mode = "b"; }
+  const x0 = e.clientX;
+  const mv = ev => {
+    const u = Math.max(0, Math.min(A.duration, tAt($("wv"), ev)));
+    if (mode === "a") sel.a = Math.min(snapT(u), sel.b - 0.01);
+    else if (mode === "b") sel.b = Math.max(u, sel.a + 0.01);
+    else if (Math.abs(ev.clientX - x0) > 3) { const s0 = snapT(anchor); sel = {a: Math.min(s0, u), b: Math.max(s0, u)}; }
+    syncSel(); draw();
+  };
+  const up = ev => {
+    removeEventListener("mousemove", mv);
+    if (mode === "new" && Math.abs(ev.clientX - x0) <= 3) { cursor = t; if (!au.paused) au.currentTime = t; }
+    syncSel(); draw();
+  };
+  addEventListener("mousemove", mv); addEventListener("mouseup", up, {once: true});
+};
+$("wv").ondblclick = e => {
+  const t = tAt($("wv"), e), s = A.sounds.find(s => s.start <= t && t <= s.end);
+  if (s) { sel = {a: s.start, b: s.end}; syncSel(); draw(); }
+};
+function syncSel() {
+  $("selA").value = sel ? sel.a.toFixed(3) : ""; $("selB").value = sel ? sel.b.toFixed(3) : "";
+  $("selLen").textContent = sel ? `${(sel.b - sel.a).toFixed(3)} s` : "nothing selected: drag on the waveform";
+  $("playSel").disabled = $("saveBtn").disabled = !sel;
+}
+function selFromInputs() {
+  const a = +$("selA").value, b = +$("selB").value;
+  if (b > a) { sel = {a: Math.max(0, a), b: Math.min(A.duration, b)}; syncSel(); draw(); }
+}
+$("selA").onchange = selFromInputs; $("selB").onchange = selFromInputs;
+
+/* ---- playback ---- */
+function playRange(a, b, loop) {
+  au.currentTime = a; stopAt = b; loopA = loop ? a : null;
+  au.play().catch(FK.fail);
+}
+$("playSel").onclick = () => sel && playRange(sel.a, sel.b, $("loopSel").checked);
+$("playCur").onclick = () => playRange(cursor, null, false);
+$("stopBtn").onclick = () => { au.pause(); stopAt = null; draw(); };
+(function tick() {
+  if (!au.paused) {
+    if (stopAt != null && au.currentTime >= stopAt) {
+      if (loopA != null) au.currentTime = loopA; else { au.pause(); stopAt = null; }
+    }
+    const t = au.currentTime;
+    if (A && (t > view.t1 || t < view.t0)) { const span = view.t1 - view.t0; zoomTo(t - span * 0.1, t + span * 0.9); }
+    $("clock").textContent = fmt(t);
+    draw();
+  }
+  requestAnimationFrame(tick);
+})();
+document.addEventListener("keydown", e => {
+  if ($("tab-cut").hidden || e.target.matches("input, select, textarea")) return;
+  if (e.key === " ") { e.preventDefault(); au.paused ? (sel ? $("playSel").click() : $("playCur").click()) : $("stopBtn").click(); }
+  if (e.key === "Enter" && sel) { e.preventDefault(); $("saveBtn").click(); }
+});
+
+/* ---- saving ---- */
+function opts() { return {trim: $("oTrim").checked, fade: $("oFade").checked ? 0.005 : 0, normalize: $("oNorm").checked, below: +$("below").value}; }
+$("saveBtn").onclick = async () => {
+  if (!sel) return;
+  try {
+    const s = await FK.api("/api/sounds/save", {json: {key: KEY, start: sel.a, end: sel.b, name: $("sName").value,
+      category: $("sCat").value, tags: $("sTags").value, loop: $("sLoop").checked, ...opts()}});
+    FK.toast(`Saved "${s.name}" (${s.duration.toFixed(2)} s) to ${s.category}`);
+    $("sName").value = "";
+    loadLib();
+  } catch (e) { FK.fail(e); }
+};
+const stem = () => (A?.name || "sound").replace(/\.[^.]+$/, "");
+function renderFound() {
+  const box = $("found");
+  box.innerHTML = "";
+  $("foundCount").textContent = ` · ${A.sounds.length}`;
+  A.sounds.forEach((s, k) => {
+    const r = document.createElement("div");
+    r.className = "row";
+    r.innerHTML = `<input type="checkbox" class="tick"><button class="small play">▶</button><button class="small pick">Select</button>
+      <span class="mono dim" style="white-space:nowrap">${fmt(s.start)}–${fmt(s.end)}</span>
+      <span class="dim" style="white-space:nowrap">${(s.end - s.start).toFixed(2)} s · ${s.level} dB</span>
+      <input type="text" class="nm"><select class="cat"></select>`;
+    r.querySelector(".nm").value = `${stem()} ${String(k + 1).padStart(2, "0")}`;
+    const rc = r.querySelector(".cat");
+    fillCatSelect(rc, $("sCat").value);
+    rc.onchange = () => rc.dataset.own = "1";  // chosen for this row: stop following the main category
+    r.querySelector(".play").onclick = () => playRange(s.start, s.end, false);
+    r.querySelector(".pick").onclick = () => { sel = {a: s.start, b: s.end}; zoomTo(s.start - (s.end - s.start) * 0.3, s.end + (s.end - s.start) * 0.3); syncSel(); };
+    r.dataset.k = k;
+    box.append(r);
+  });
+}
+$("sCat").onchange = () => document.querySelectorAll("#found .cat").forEach(c => { if (!c.dataset.own) c.value = $("sCat").value; });
+$("allBtn").onclick = () => document.querySelectorAll("#found .tick").forEach(c => c.checked = true);
+$("noneBtn").onclick = () => document.querySelectorAll("#found .tick").forEach(c => c.checked = false);
+$("saveMany").onclick = async () => {
+  const items = [...document.querySelectorAll("#found .row")].filter(r => r.querySelector(".tick").checked).map(r => {
+    const s = A.sounds[+r.dataset.k];
+    return {start: s.start, end: s.end, name: r.querySelector(".nm").value, category: r.querySelector(".cat").value, tags: $("sTags").value};
+  });
+  if (!items.length) return FK.toast("Tick at least one sound.", true);
+  try {
+    const j = await FK.runJob("/api/sounds/save-many", {key: KEY, items, ...opts()}, $("bar"), $("barLbl"));
+    FK.toast(`Saved ${j.result.saved} sounds`); loadLib();
+  } catch (e) { FK.fail(e); }
+};
+
+/* ---- start ---- */
+(async () => {
+  await loadLib();
+  await loadSources();
+  const h = location.hash;
+  if (h.startsWith("#cut=")) openSource(decodeURIComponent(h.slice(5)));
+  else if (h === "#cut") tab("cut");
+  syncSel();
+})().catch(FK.fail);
+</script>
+{% endblock %}
