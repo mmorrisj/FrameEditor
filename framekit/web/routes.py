@@ -1234,8 +1234,8 @@ def api_sounds_save_many():
 def api_mixes():
     if request.method == "POST":
         d = _body()
-        spec = d.get("video") or {}
-        if spec.get("kind") == "library":
+        spec = d.get("video") or None
+        if spec and spec.get("kind") == "library":
             _vid(spec.get("id") or "")
         return jsonify(_snd(mix.create, spec, d.get("name")))
     renders = [{"session": x["id"], "created": x["created"], "names": x["names"], "segments": x["segments"]}
@@ -1243,6 +1243,20 @@ def api_mixes():
     return jsonify(mixes=mix.list_mixes(), renders=renders,
                    videos=[{"id": v["id"], "name": v["name"], "duration": (v["info"] or {}).get("duration")}
                            for v in library.list_videos()])
+
+
+@bp.route("/api/mixes/browse")
+def api_mix_browse():
+    return jsonify(items=mix.browse())
+
+
+@bp.route("/media/mix-poster")
+def media_mix_poster():
+    """First, middle and last frame of a video, side by side (for the video browser)."""
+    spec = {k: request.args.get(k) for k in ("kind", "id", "session", "file") if request.args.get(k)}
+    if spec.get("kind") == "library":
+        _vid(spec.get("id") or "")
+    return send_file(_snd(mix.poster, spec), mimetype="image/jpeg", max_age=86400)
 
 
 @bp.route("/api/mixes/<mid>", methods=["GET", "PUT", "DELETE"])
@@ -1254,7 +1268,8 @@ def api_mix(mid):
         return jsonify(_snd(mix.save, mid, _body()))
     m = _snd(mix.get, mid)
     m["options"] = {"targets": mix.TARGETS, "nr": list(mix.NR), "lowcut": mix.LOWCUT, "highcut": mix.HIGHCUT,
-                    "clip_target": mix.CLIP_TARGET}
+                    "clip_target": mix.CLIP_TARGET, "sizes": mix.SIZES, "fps": list(mix.FPS_CHOICES), "fits": mix.FITS,
+                    "transitions": mix.TRANSITIONS}
     return jsonify(m)
 
 
@@ -1287,9 +1302,29 @@ def api_mix_render(mid):
                             to_library=bool(_body().get("library")), ref=f"mix:{mid}"))
 
 
-@bp.route("/media/mix/<mid>/video")
-def media_mix_video(mid):
-    return send_file(_snd(mix.video_path, mid), conditional=True)
+@bp.route("/api/mixes/<mid>/source")
+def api_mix_source(mid):
+    """Details of a video before it is added to the mix (duration, size, rate, audio)."""
+    _snd(mix.get, mid)
+    spec = {k: request.args.get(k) for k in ("kind", "id", "session", "file") if request.args.get(k)}
+    sp = _snd(mix.norm_src, spec, True)
+    s = _snd(mix.source, sp)
+    return jsonify(src=sp, skey=mix.skey(sp), **{k: s[k] for k in ("name", "duration", "fps", "fps_frac", "width", "height",
+                                                                 "has_audio", "markers")})
+
+
+@bp.route("/media/mix/<mid>/src/<key>")
+def media_mix_src(mid, key):
+    return send_file(_snd(mix.source_path, mid, key), conditional=True)
+
+
+@bp.route("/media/mix/<mid>/thumb/<key>")
+def media_mix_thumb(mid, key):
+    try:
+        t = float(request.args.get("t") or 0)
+    except ValueError:
+        abort(400)
+    return send_file(_snd(mix.thumb, mid, key, t), mimetype="image/jpeg", max_age=86400)
 
 
 @bp.route("/api/mixes/<mid>/file/<name>")

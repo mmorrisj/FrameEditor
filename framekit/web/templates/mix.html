@@ -1,14 +1,18 @@
 {% extends "base.html" %}
 {% block main %}
 <style>
-  .mx-top { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 12px; align-items: start; }
+  .mx-top { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 12px; align-items: start; }
   @media (max-width: 900px) { .mx-top { grid-template-columns: minmax(0, 1fr); } }
-  #vid { width: 100%; max-height: 46vh; background: #000; border-radius: 6px; display: block; }
+  #stageBox { display: flex; justify-content: center; background: #000; border-radius: 6px; }
+  #stage { position: relative; background: #000; overflow: hidden; }
+  #stage video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; opacity: 0; }
+  #stage.crop video { object-fit: cover; }
+  #stageMsg { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #aaa; font-size: 13px; text-align: center; padding: 10px; }
   .mx-tools button.on { background: var(--accent); color: #fff; border-color: var(--accent); }
   #tlWrap { overflow-x: auto; overflow-y: hidden; position: relative; border: 1px solid var(--edge); border-radius: 6px; background: var(--bg); user-select: none; }
   #tl { position: relative; }
   .mx-row { display: flex; border-bottom: 1px solid var(--edge); }
-  .mx-head { position: sticky; left: 0; z-index: 3; width: 170px; flex: none; background: var(--panel); border-right: 1px solid var(--edge);
+  .mx-head { position: sticky; left: 0; z-index: 5; width: 170px; flex: none; background: var(--panel); border-right: 1px solid var(--edge);
              padding: 4px 6px; font-size: 12px; display: flex; flex-direction: column; gap: 2px; }
   .mx-head input[type=range] { width: 100%; }
   .mx-head .row { gap: 4px; flex-wrap: nowrap; }
@@ -16,9 +20,23 @@
   .mx-ruler .mx-lane { height: 26px; cursor: pointer; }
   .mx-tick { position: absolute; top: 0; height: 100%; border-left: 1px solid var(--edge); font-size: 10px; color: var(--dim); padding-left: 3px; }
   .mx-mark { position: absolute; top: 0; bottom: 0; width: 0; border-left: 1px dashed var(--amber); z-index: 1; pointer-events: none; }
+  .mx-mark.join { border-left-color: rgba(255,255,255,.35); }
   .mx-mark span { position: absolute; top: 12px; left: 2px; font-size: 10px; color: var(--amber); white-space: nowrap; }
-  .mx-video .mx-lane { height: 22px; }
-  .mx-seg { position: absolute; top: 3px; bottom: 3px; border-radius: 3px; font-size: 10px; color: #fff; padding-left: 4px; overflow: hidden; white-space: nowrap; }
+  .mx-mark.join span { display: none; }
+  .mx-video .mx-lane { height: 70px; }
+  .mx-video.drop .mx-lane { background: rgba(57,135,229,.08); }
+  .mx-vclip { position: absolute; top: 4px; bottom: 4px; border-radius: 5px; background: #2b2b3a; border: 1px solid #7b6fd6; overflow: hidden; cursor: grab; }
+  .mx-vclip.sel { border-color: #fff; box-shadow: 0 0 0 1px #fff; z-index: 3 !important; }
+  .mx-vclip.missing { background: #5a2323; border-color: var(--warn); }
+  .mx-vclip.drag { opacity: .8; z-index: 4 !important; cursor: grabbing; }
+  .mx-vclip .th { position: absolute; left: 0; right: 0; top: 15px; bottom: 0; display: flex; overflow: hidden; pointer-events: none; }
+  .mx-vclip .th img { height: 100%; flex: none; object-fit: cover; opacity: .9; }
+  .mx-vclip .nm { position: absolute; left: 5px; top: 0; right: 9px; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #fff; pointer-events: none; }
+  .mx-vclip .ovl { position: absolute; left: 0; top: 0; bottom: 0; pointer-events: none; z-index: 1;
+                   background: repeating-linear-gradient(135deg, rgba(255,255,255,.28) 0 3px, transparent 3px 7px); border-right: 1px solid rgba(255,255,255,.6); }
+  .mx-vclip .ovl.black { background: repeating-linear-gradient(135deg, rgba(0,0,0,.6) 0 3px, transparent 3px 7px); }
+  .mx-vclip .tag { position: absolute; right: 9px; bottom: 2px; font-size: 10px; color: #ffd27a; pointer-events: none; z-index: 2; text-shadow: 0 0 2px #000; }
+  #insMark { position: absolute; top: 0; bottom: 0; width: 3px; margin-left: -1px; background: #ffd27a; z-index: 6; pointer-events: none; display: none; }
   .mx-track .mx-lane { height: 76px; }
   .mx-head select { font-size: 11px; padding: 0 2px; max-width: 100%; }
   .mx-clip.busy { opacity: .55; }
@@ -29,25 +47,64 @@
   .mx-clip.missing { background: #5a2323; border-color: var(--warn); }
   .mx-clip canvas { position: absolute; inset: 14px 0 0 0; width: 100%; height: calc(100% - 14px); }
   .mx-clip .nm { position: absolute; left: 5px; top: 0; font-size: 11px; white-space: nowrap; color: #fff; pointer-events: none; }
-  .mx-clip .h { position: absolute; top: 0; bottom: 0; width: 7px; cursor: ew-resize; z-index: 2; }
-  .mx-clip .h.l { left: 0; } .mx-clip .h.r { right: 0; }
-  .mx-clip .h:hover { background: rgba(255,255,255,.25); }
+  .mx-clip .h, .mx-vclip .h { position: absolute; top: 0; bottom: 0; width: 7px; cursor: ew-resize; z-index: 2; }
+  .mx-clip .h.l, .mx-vclip .h.l { left: 0; } .mx-clip .h.r, .mx-vclip .h.r { right: 0; }
+  .mx-clip .h:hover, .mx-vclip .h:hover { background: rgba(255,255,255,.25); }
   .mx-clip .fi, .mx-clip .fo { position: absolute; top: 0; bottom: 0; pointer-events: none; }
   .mx-clip .fi { left: 0; background: linear-gradient(to right, rgba(0,0,0,.55), transparent); }
   .mx-clip .fo { right: 0; background: linear-gradient(to left, rgba(0,0,0,.55), transparent); }
-  .mx-cut .mx-clip, .mx-cut .mx-clip .h { cursor: crosshair; }
+  .mx-cut .mx-clip, .mx-cut .mx-clip .h, .mx-cut .mx-vclip, .mx-cut .mx-vclip .h { cursor: crosshair; }
   #ph { position: absolute; top: 0; bottom: 0; width: 1px; background: #fff; z-index: 4; pointer-events: none; }
   #cutGuide { position: absolute; top: 0; bottom: 0; width: 0; border-left: 1px dashed #fff; z-index: 4; pointer-events: none; display: none; }
+  .mx-tabs { display: flex; gap: 4px; margin-bottom: 6px; }
+  .mx-tabs button.on { background: var(--accent); color: #fff; border-color: var(--accent); }
   .mx-snd { display: flex; gap: 6px; align-items: center; padding: 4px; border-bottom: 1px solid var(--edge); cursor: grab; }
   .mx-snd:hover { background: var(--panel2); }
   .mx-snd .grow { min-width: 0; }
   .mx-snd .grow div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  #sndList { max-height: 40vh; overflow-y: auto; }
+  #sndList, #vidList { max-height: 40vh; overflow-y: auto; }
+  .mx-snd .tn { width: 64px; height: 36px; flex: none; background: #000 no-repeat 50% 0 / 300% 100%; border-radius: 3px; }
+  #browser { position: fixed; inset: 0; z-index: 50; background: rgba(0,0,0,.6); display: flex; }
+  #browser.hidden { display: none; }
+  .bx { margin: 2vh auto; width: min(1600px, 97vw); height: 96vh; background: var(--panel); border: 1px solid var(--edge); border-radius: 8px; display: flex; flex-direction: column; }
+  .bx-top { display: flex; gap: 8px; padding: 10px; border-bottom: 1px solid var(--edge); flex-wrap: wrap; align-items: center; }
+  .bx-body { flex: 1; display: flex; min-height: 0; }
+  #bxGrid { flex: 1; overflow-y: auto; padding: 10px; display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--card, 220px), 1fr)); gap: 10px; align-content: start; }
+  #bxSide { width: 400px; flex: none; border-left: 1px solid var(--edge); padding: 10px; overflow-y: auto; }
+  @media (max-width: 900px) { .bx-body { flex-direction: column; } #bxSide { width: auto; border-left: 0; border-top: 1px solid var(--edge); max-height: 45%; } }
+  .vc { background: var(--bg); border: 1px solid var(--edge); border-radius: 6px; overflow: hidden; cursor: pointer; }
+  .vc:hover { border-color: #888; }
+  .vc.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  .vc .im { position: relative; aspect-ratio: 16/9; background: #000; display: flex; justify-content: center; }
+  .vc .im .f, .vc .ends .f { height: 100%; max-width: 100%; background: no-repeat 50% 0 / 300% 100%; }
+  .vc .im video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000; }
+  .vc .badge { position: absolute; font-size: 11px; background: rgba(0,0,0,.75); color: #fff; padding: 0 5px; border-radius: 3px; pointer-events: none; z-index: 1; }
+  .vc .dur { right: 4px; bottom: 4px; } .vc .inmix { left: 4px; top: 4px; color: #ffd27a; }
+  .vc .ends { display: flex; gap: 4px; padding: 4px 4px 0; height: 46px; }
+  .vc .ends > div { flex: 1; display: flex; justify-content: center; background: #000; position: relative; border-radius: 3px; overflow: hidden; }
+  .vc .ends span { position: absolute; left: 3px; bottom: 1px; font-size: 9px; color: #fff; text-shadow: 0 0 2px #000; pointer-events: none; }
+  .vc .nm { font-size: 12px; padding: 4px 6px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .vc .meta { font-size: 11px; color: var(--dim); padding: 0 6px 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #bxPlayer { width: 100%; max-height: 50vh; background: #000; border-radius: 6px; }
+  #bxEnds { display: flex; gap: 6px; margin: 6px 0; }
+  #bxEnds > div { flex: 1; text-align: center; font-size: 11px; color: var(--dim); }
+  #bxEnds .f { width: 100%; background: #000 no-repeat 0 0 / 300% 100%; border-radius: 4px; }
+  #bxSide .acts { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+  #hoverPop { position: fixed; z-index: 60; width: 380px; background: #000; border: 1px solid var(--edge); border-radius: 6px; overflow: hidden;
+              box-shadow: 0 6px 24px rgba(0,0,0,.5); pointer-events: none; display: none; }
+  #hoverPop video { display: block; width: 100%; max-height: 420px; object-fit: contain; background: #000; }
+  #hoverPop .cap { display: flex; gap: 6px; font-size: 11px; color: #ddd; padding: 3px 6px; background: #111; }
+  #hoverPop .cap .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #hoverPop .bar { height: 3px; background: var(--accent); width: 0; }
+  .mx-sub { font-size: 11px; color: var(--dim); padding: 6px 4px 2px; text-transform: uppercase; letter-spacing: .04em; }
 </style>
 
 <div id="startView" class="hidden">
   <h1>Mix</h1>
-  <p class="dim" style="margin-top:-6px">Layer sounds from your sound library onto a video, preview in sync, and render.</p>
+  <p class="dim" style="margin-top:-6px">Splice videos together, layer sounds from your sound library on top, preview in sync, and render.</p>
+  <div class="card">
+    <div class="row"><b>New mix</b><span class="dim grow">start empty and add videos from the Videos tab</span><button class="primary" id="startEmpty">Start an empty mix</button></div>
+  </div>
   <div class="card">
     <b>Chained videos</b> <span class="dim">(Colour match renders)</span>
     <div id="renders" style="margin-top:6px"></div>
@@ -70,8 +127,8 @@
   </div>
   <div class="row"><progress id="bar" hidden></progress><span id="barLbl" class="dim"></span></div>
   <div class="mx-top">
-    <div class="card" style="margin:0">
-      <video id="vid" preload="auto" playsinline></video>
+    <div class="card" style="margin:0" id="playerCard">
+      <div id="stageBox"><div id="stage"><video id="va" preload="auto" playsinline></video><video id="vb" preload="auto" playsinline></video><div id="stageMsg"></div></div></div>
       <div class="row" style="margin-top:6px">
         <button class="primary" id="playBtn" style="min-width:80px">Play</button>
         <span class="mono" id="clock">0:00.00</span>
@@ -80,11 +137,20 @@
       </div>
     </div>
     <div class="card" style="margin:0">
-      <div class="row"><b>Sounds</b><span class="grow"></span><a class="small" href="/sounds#cut" target="_blank">cut more…</a></div>
-      <input id="sq" placeholder="Search sounds" style="width:100%;margin:6px 0">
-      <select id="scat" style="width:100%;margin-bottom:6px"></select>
-      <div class="dim" style="font-size:12px">Drag a sound onto a track, or ＋ to drop it at the playhead.</div>
-      <div id="sndList"></div>
+      <div class="mx-tabs"><button class="small on" id="tabSnd">Sounds</button><button class="small" id="tabVid">Videos</button><span class="grow"></span>
+        <a class="small" href="/sounds#cut" target="_blank" id="cutMore">cut more…</a></div>
+      <div id="paneSnd">
+        <input id="sq" placeholder="Search sounds" style="width:100%;margin-bottom:6px">
+        <select id="scat" style="width:100%;margin-bottom:6px"></select>
+        <div class="dim" style="font-size:12px">Drag a sound onto a track, or ＋ to drop it at the playhead.</div>
+        <div id="sndList"></div>
+      </div>
+      <div id="paneVid" class="hidden">
+        <button class="primary" id="browseBtn" style="width:100%;margin-bottom:6px" title="a grid of every video with its first, middle and last frames (B)">▦ Browse videos</button>
+        <input id="vq" placeholder="Search videos" style="width:100%;margin-bottom:6px">
+        <div class="dim" style="font-size:12px">Drag a video onto the video track, or ＋ to add it at the end.</div>
+        <div id="vidList"></div>
+      </div>
     </div>
   </div>
 
@@ -102,6 +168,24 @@
     <button class="small" id="addTrack">＋ Track</button>
   </div>
   <div id="tlWrap"><div id="tl"></div></div>
+
+  <div class="card hidden" id="vinsp" style="margin-top:10px">
+    <div class="row">
+      <b id="vName"></b><span class="dim" id="vInfo"></span><span class="grow"></span>
+      <label>from <input type="number" id="vIn" step="0.01" min="0" style="width:6em"> s</label>
+      <label>to <input type="number" id="vOut" step="0.01" min="0" style="width:6em"> s</label>
+      <span class="dim" id="vLen"></span>
+    </div>
+    <div class="row" style="margin-top:6px">
+      <label title="how this clip comes in after the one before; a transition overlaps the two clips by its length">transition in
+        <select id="vTr"></select></label>
+      <label>over <input type="number" id="vTrD" step="0.05" min="0.05" max="5" style="width:5em"> s</label>
+      <span class="dim" id="vTrNote"></span>
+      <span class="grow"></span>
+      <label>clip audio <input type="range" id="vVol" min="-30" max="12" step="0.5" style="width:140px"> <span class="mono" id="vVolV"></span></label>
+      <label><input type="checkbox" id="vMute"> mute</label>
+    </div>
+  </div>
 
   <div class="card hidden" id="insp" style="margin-top:10px">
     <div class="row">
@@ -128,6 +212,42 @@
     </div>
   </div>
 
+  <div id="browser" class="hidden">
+    <div class="bx">
+      <div class="bx-top">
+        <b>Videos</b>
+        <input id="bxQ" placeholder="Search names and folders" style="width:260px">
+        <select id="bxFolder" style="max-width:320px"></select>
+        <select id="bxSort">
+          <option value="new">newest first</option><option value="old">oldest first</option><option value="name">name</option>
+          <option value="long">longest first</option><option value="short">shortest first</option>
+        </select>
+        <select id="bxSize"><option value="160">small</option><option value="220">medium</option><option value="320">large</option></select>
+        <label class="dim"><input type="checkbox" id="bxChains"> chains only</label>
+        <span class="dim" id="bxCount"></span>
+        <span class="grow"></span>
+        <span class="dim" style="font-size:12px">hover to play · click for details · double-click to add</span>
+        <button class="small" id="bxClose" title="close (Esc)">✕</button>
+      </div>
+      <div class="bx-body">
+        <div id="bxGrid"></div>
+        <div id="bxSide"><div class="dim" style="padding:10px">Click a video to preview it here.</div></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" id="outCard" style="margin-top:10px">
+    <div class="row">
+      <b>Output</b>
+      <label>size <select id="oSize"></select></label>
+      <span id="oCustom" class="hidden"><input type="number" id="oW" min="64" max="7680" step="2" style="width:5.5em"> × <input type="number" id="oH" min="64" max="7680" step="2" style="width:5.5em"></span>
+      <label title="clips at other rates are converted to this one">frame rate <select id="oFps"></select></label>
+      <label title="how clips of another shape fill the frame">fit <select id="oFit"></select></label>
+      <span class="grow"></span>
+      <span class="dim" id="oNote"></span>
+    </div>
+  </div>
+
   <div class="card" id="masterCard" style="margin-top:10px">
     <div class="row">
       <b>Master</b>
@@ -149,8 +269,10 @@ let M = null, SND = {}, CAT = "", sel = null, tool = "sel", pps = 60;
 const HEAD = 170;
 const fmt = t => { t = Math.max(0, t); const m = Math.floor(t / 60); return `${m}:${(t - m * 60).toFixed(2).padStart(5, "0")}`; };
 const dbGain = d => Math.pow(10, d / 20);
-const V = () => $("vid");
 const newId = () => Math.random().toString(36).slice(2, 10);
+const span = () => Math.max(M.duration, 10);           // the timeline is at least 10 s wide, even when empty
+const selV = () => M.vclips.find(x => x.id === sel);
+const selA = () => M.clips.find(x => x.id === sel);
 
 /* ================= start view ================= */
 async function startView() {
@@ -161,7 +283,7 @@ async function startView() {
   for (const x of d.renders) {
     const row = document.createElement("div");
     row.className = "row"; row.style.cssText = "padding:4px 0;border-top:1px solid var(--edge)";
-    row.innerHTML = `<span>${FK.when(x.created)}</span><span class="dim grow"></span><button class="small primary">Layer sounds</button>`;
+    row.innerHTML = `<span>${FK.when(x.created)}</span><span class="dim grow"></span><button class="small primary">Start a mix</button>`;
     row.querySelector(".grow").textContent = `${x.segments} segments: ${x.names.join(", ")}`;
     row.querySelector("button").onclick = () => create({kind: "colormatch", session: x.session});
     r.append(row);
@@ -169,12 +291,13 @@ async function startView() {
   $("libVid").innerHTML = "";
   for (const v of d.videos) $("libVid").add(new Option(`${v.name}  (${FK.dur(v.duration)})`, v.id));
   $("startLib").onclick = () => $("libVid").value && create({kind: "library", id: $("libVid").value});
+  $("startEmpty").onclick = () => create(null);
   const mx = $("mixes");
   mx.innerHTML = d.mixes.length ? "" : '<div class="dim">None yet.</div>';
   for (const x of d.mixes) {
     const row = document.createElement("div");
     row.className = "row"; row.style.cssText = "padding:4px 0;border-top:1px solid var(--edge)";
-    row.innerHTML = `<a href="/mix?id=${x.id}" class="nm"></a><span class="dim grow">${x.clips} clips · ${FK.dur(x.duration)} · ${FK.when(x.updated)}${x.outputs ? ` · ${x.outputs} render${x.outputs > 1 ? "s" : ""}` : ""}</span>
+    row.innerHTML = `<a href="/mix?id=${x.id}" class="nm"></a><span class="dim grow">${x.videos} video${x.videos === 1 ? "" : "s"} · ${x.clips} sound${x.clips === 1 ? "" : "s"} · ${FK.dur(x.duration)} · ${FK.when(x.updated)}${x.outputs ? ` · ${x.outputs} render${x.outputs > 1 ? "s" : ""}` : ""}</span>
       <button class="small danger">Delete</button>`;
     row.querySelector(".nm").textContent = x.name;
     row.querySelector("button").onclick = async () => { if (confirm("Delete this mix and its renders?")) { await FK.api(`/api/mixes/${x.id}`, {method: "DELETE"}); startView(); } };
@@ -182,29 +305,59 @@ async function startView() {
   }
 }
 async function create(video) {
-  try { const m = await FK.api("/api/mixes", {json: {video}}); location.href = `/mix?id=${m.id}`; } catch (e) { FK.fail(e); }
+  try { const m = await FK.api("/api/mixes", {json: video ? {video} : {}}); location.href = `/mix?id=${m.id}`; } catch (e) { FK.fail(e); }
 }
 
 /* ================= editor ================= */
 async function editView() {
   $("editView").classList.remove("hidden");
   M = await FK.api(`/api/mixes/${MID}`);
-  if (!M.video_ok) FK.toast(M.video_error || "The video is missing", true);
+  if (!M.video_ok) FK.toast(M.video_error || "A video in this mix is missing", true);
   $("mxName").value = M.name;
-  $("mxInfo").textContent = `· ${M.video_name} · ${fmt(M.duration)}${M.has_audio ? "" : " · no original audio"}`;
-  V().src = `/media/mix/${MID}/video`;
-  pps = Math.max(10, Math.min(400, ($("tlWrap").clientWidth - HEAD - 20) / Math.max(1, M.duration)));
+  pps = Math.max(10, Math.min(400, ($("tlWrap").clientWidth - HEAD - 20) / span()));
   $("zoom").value = zoomToSlider(pps);
   Object.assign(SND, M.sounds);
   renderOutputs();
+  initAudio();
+  initOutput();
   await loadSounds();
   render();
-  initAudio();
   M.clips.forEach(c => prepare(c));
   initMaster();
   loadDuck();
+  sync(0, true);
+  if (!M.vclips.length) showTab("vid");
 }
 $("mxName").onchange = () => { M.name = $("mxName").value; dirty(); };
+function info() {
+  const o = M.out;
+  $("mxInfo").textContent = `· ${M.vclips.length} video${M.vclips.length === 1 ? "" : "s"} · ${fmt(M.duration)} · ${o.width}×${o.height} @ ${+o.fps.toFixed(3)} fps`;
+}
+
+/* ---- placement: the same rule the server uses (whole output frames; a transition overlaps
+   the clip with the one before by its length, at most half of either) ---- */
+function relayout() {
+  const F = M.out.fps, rows = [];
+  let t = 0, prev = 0;
+  M.vclips.forEach((v, i) => {
+    const n = Math.max(1, Math.round((v.out - v.in) * F));
+    let d = 0;
+    if (i && (v.transition.type === "crossfade" || v.transition.type === "fadeblack"))
+      d = Math.max(0, Math.min(Math.round(v.transition.dur * F), Math.floor(prev / 2), Math.floor(n / 2)));
+    const start = t - d;
+    rows.push({id: v.id, frames: n, dframes: d, sframe: start, start: start / F, len: n / F, overlap: d / F});
+    t = start + n; prev = n;
+  });
+  M.layout = rows; M.duration = t / F;
+  const mk = [];
+  M.vclips.forEach((v, i) => {
+    const r = rows[i], s = M.sources[v.skey] || {markers: [], name: "?"};
+    if (i) mk.push({t: r.start, label: s.name, join: true});
+    for (const m of s.markers || []) if (m.t > v.in + 0.05 && m.t < v.out - 0.05) mk.push({t: r.start + m.t - v.in, label: m.label});
+  });
+  M.markers = mk;
+}
+const rowOf = v => M.layout.find(r => r.id === v.id);
 
 /* ---- zoom: slider 0..100 maps to 10..400 px per second, logarithmic ---- */
 const zoomToSlider = p => Math.round(Math.log(p / 10) / Math.log(40) * 100);
@@ -215,7 +368,16 @@ $("zoom").oninput = () => {
   w.scrollLeft = Math.max(0, centre * pps + HEAD - w.clientWidth / 2);
 };
 
-/* ---- sound browser ---- */
+/* ---- browser tabs: sounds and videos ---- */
+function showTab(k) {
+  $("tabSnd").classList.toggle("on", k === "snd"); $("tabVid").classList.toggle("on", k === "vid");
+  $("paneSnd").classList.toggle("hidden", k !== "snd"); $("paneVid").classList.toggle("hidden", k !== "vid");
+  $("cutMore").classList.toggle("hidden", k !== "snd");
+  if (k === "vid") loadVideos();
+}
+$("tabSnd").onclick = () => showTab("snd");
+$("tabVid").onclick = () => showTab("vid");
+
 async function loadSounds() {
   const d = await FK.api(`/api/sounds?q=${encodeURIComponent($("sq").value)}&category=${encodeURIComponent(CAT)}`);
   if (!$("scat").options.length) {
@@ -234,7 +396,7 @@ async function loadSounds() {
       <button class="small add" title="add at the playhead">＋</button>`;
     r.querySelector(".nm").textContent = s.name;
     r.querySelector(".pv").onclick = () => { au.src = `/media/sound/${s.id}`; au.play(); };
-    r.querySelector(".add").onclick = () => addClip(s.id, selTrack(), V().currentTime);
+    r.querySelector(".add").onclick = () => addClip(s.id, selTrack(), now());
     r.ondragstart = e => { e.dataTransfer.setData("text/x-sound", String(s.id)); e.dataTransfer.effectAllowed = "copy"; };
     box.append(r);
   }
@@ -243,15 +405,259 @@ let sqT = null;
 $("sq").oninput = () => { clearTimeout(sqT); sqT = setTimeout(loadSounds, 200); };
 $("scat").onchange = () => { CAT = $("scat").value; loadSounds(); };
 function selTrack() {
-  const c = M.clips.find(x => x.id === sel);
+  const c = selA();
   return c ? c.track : M.tracks[0].id;
 }
 
+let VIDS = null;
+const posterUrl = spec => `/media/mix-poster?${new URLSearchParams(spec)}`;
+const videoUrl = x => x.spec.kind === "library" ? `/media/video/${x.spec.id}` : `/api/colormatch/${x.spec.session}/file/${encodeURIComponent(x.spec.file)}`;
+const lazyObs = new IntersectionObserver(es => es.forEach(e => {
+  if (!e.isIntersecting) return;
+  e.target.style.backgroundImage = `url("${e.target.dataset.bg}")`;
+  lazyObs.unobserve(e.target);
+}), {rootMargin: "300px"});
+function lazyBg(el, url) { el.dataset.bg = url; lazyObs.observe(el); }
+async function videos() {
+  if (!VIDS) VIDS = (await FK.api("/api/mixes/browse")).items;
+  return VIDS;
+}
+const vidMeta = x => [FK.dur(x.duration), x.width ? `${x.width}×${x.height}` : "", x.fps ? `${+(+x.fps).toFixed(2)} fps` : "", x.has_audio ? "" : "no audio"].filter(Boolean).join(" · ");
+async function loadVideos() {
+  await videos();
+  const q = $("vq").value.trim().toLowerCase(), box = $("vidList");
+  box.innerHTML = "";
+  const list = VIDS.filter(x => !q || `${x.name} ${x.folder} ${x.file}`.toLowerCase().includes(q));
+  let lastChain = null;
+  for (const x of list.slice(0, 300)) {
+    if (x.chain !== lastChain) {
+      const h = document.createElement("div"); h.className = "mx-sub"; h.textContent = x.chain ? "Chained videos" : "Library videos"; box.append(h);
+      lastChain = x.chain;
+    }
+    const r = document.createElement("div");
+    r.className = "mx-snd"; r.draggable = true;
+    r.innerHTML = `<div class="tn"></div><div class="grow"><div class="nm"></div><div class="dim" style="font-size:11px"></div></div>
+      <button class="small add" title="add at the end">＋</button>`;
+    lazyBg(r.querySelector(".tn"), posterUrl(x.spec));
+    r.querySelector(".nm").textContent = x.name; r.title = `${x.folder}/${x.file}`;
+    r.querySelector(".dim").textContent = vidMeta(x);
+    r.querySelector(".add").onclick = () => addVideo(x.spec, M.vclips.length);
+    r.ondragstart = e => { hidePop(); e.dataTransfer.setData("text/x-video", JSON.stringify(x.spec)); e.dataTransfer.effectAllowed = "copy"; };
+    hoverPreview(r, x);
+    box.append(r);
+  }
+  if (!list.length) box.innerHTML = '<div class="dim" style="padding:6px">No videos.</div>';
+}
+$("vidList").addEventListener("scroll", () => hidePop());
+let vqT = null;
+$("vq").oninput = () => { clearTimeout(vqT); vqT = setTimeout(loadVideos, 150); };
+
+/* ---- hover preview: a bigger silent player beside the list, playing the clip from the start
+   (takes chained from the same frame look alike in a still) ---- */
+const pop = document.createElement("div");
+pop.id = "hoverPop";
+pop.innerHTML = `<video muted loop playsinline></video><div class="bar"></div><div class="cap"><span class="nm"></span><span class="t mono"></span></div>`;
+document.body.append(pop);
+const popV = pop.querySelector("video");
+let popT = null, popFor = null;
+popV.ontimeupdate = () => {
+  if (!popV.duration) return;
+  pop.querySelector(".bar").style.width = `${popV.currentTime / popV.duration * 100}%`;
+  pop.querySelector(".t").textContent = `${popV.currentTime.toFixed(1)} / ${popV.duration.toFixed(1)} s`;
+};
+function hidePop() {
+  clearTimeout(popT); popFor = null;
+  pop.style.display = "none";
+  popV.pause(); popV.removeAttribute("src"); popV.load();
+}
+function hoverPreview(el, x) {
+  el.addEventListener("mouseenter", () => {
+    clearTimeout(popT);
+    popT = setTimeout(() => {
+      popFor = el;
+      const w = 380, h = Math.min(420, w * (x.height || 9) / (x.width || 16)) + 3 + 20;
+      const r = el.getBoundingClientRect();
+      const left = r.left - w - 10 >= 4 ? r.left - w - 10 : Math.min(innerWidth - w - 4, r.right + 10);
+      pop.style.left = `${left}px`;
+      pop.style.top = `${Math.max(4, Math.min(innerHeight - h - 4, r.top + r.height / 2 - h / 2))}px`;
+      pop.querySelector(".nm").textContent = x.name;
+      pop.querySelector(".t").textContent = FK.dur(x.duration);
+      pop.querySelector(".bar").style.width = "0";
+      popV.src = videoUrl(x);
+      popV.play().catch(() => {});
+      pop.style.display = "block";
+    }, 150);
+  });
+  el.addEventListener("mouseleave", () => { if (popFor === el || !popFor) hidePop(); });
+  el.addEventListener("mousedown", hidePop);
+}
+
+/* ---- the video browser: a grid of every video ---- */
+const BX = {q: "", folder: "", sort: "new", size: "220", chains: false, shown: 0, list: [], pick: null};
+try { Object.assign(BX, JSON.parse(localStorage.getItem("mix.browser") || "{}"), {q: "", shown: 0, list: [], pick: null}); } catch {}
+function bxSave() { try { localStorage.setItem("mix.browser", JSON.stringify({folder: BX.folder, sort: BX.sort, size: BX.size, chains: BX.chains})); } catch {} }
+async function openBrowser() {
+  $("browser").classList.remove("hidden");
+  $("bxGrid").innerHTML = '<div class="dim">Loading…</div>';
+  await videos();
+  const folders = [...new Set(VIDS.map(x => x.folder))].sort((a, b) => a.localeCompare(b));
+  $("bxFolder").innerHTML = "";
+  $("bxFolder").add(new Option(`all folders (${folders.length})`, ""));
+  for (const f of folders) $("bxFolder").add(new Option(`${f} (${VIDS.filter(x => x.folder === f).length})`, f));
+  if (!folders.includes(BX.folder)) BX.folder = "";
+  $("bxFolder").value = BX.folder; $("bxSort").value = BX.sort; $("bxSize").value = BX.size; $("bxChains").checked = BX.chains;
+  $("bxQ").value = BX.q;
+  bxFilter();
+  $("bxQ").focus();
+}
+function closeBrowser() {
+  $("browser").classList.add("hidden");
+  $("bxGrid").querySelectorAll("video").forEach(v => v.remove());
+  const p = $("bxPlayer"); if (p) p.pause();
+}
+function bxFilter() {
+  const q = BX.q.trim().toLowerCase();
+  const by = {new: (a, b) => b.mtime - a.mtime, old: (a, b) => a.mtime - b.mtime, name: (a, b) => a.name.localeCompare(b.name, undefined, {numeric: true}),
+              long: (a, b) => b.duration - a.duration, short: (a, b) => a.duration - b.duration}[BX.sort];
+  BX.list = VIDS.filter(x => (!BX.folder || x.folder === BX.folder) && (!BX.chains || x.chain) &&
+                             (!q || `${x.name} ${x.folder} ${x.file}`.toLowerCase().includes(q))).sort(by);
+  $("bxGrid").style.setProperty("--card", `${BX.size}px`);
+  $("bxGrid").innerHTML = ""; $("bxGrid").scrollTop = 0; BX.shown = 0;
+  $("bxCount").textContent = `${BX.list.length} video${BX.list.length === 1 ? "" : "s"}`;
+  if (!BX.list.length) $("bxGrid").innerHTML = '<div class="dim">No videos match.</div>';
+  bxMore();
+}
+const bxSentinel = document.createElement("div");
+const bxObs = new IntersectionObserver(es => { if (es.some(e => e.isIntersecting)) bxMore(); }, {root: null, rootMargin: "600px"});
+function bxMore() {  // cards are added as you scroll, so a big library opens quickly
+  const g = $("bxGrid"), inMix = {};
+  for (const v of M.vclips) inMix[v.skey] = (inMix[v.skey] || 0) + 1;
+  for (const x of BX.list.slice(BX.shown, BX.shown + 90)) g.append(card(x, inMix[x.key] || 0));
+  BX.shown = Math.min(BX.list.length, BX.shown + 90);
+  bxSentinel.remove();
+  if (BX.shown < BX.list.length) { g.append(bxSentinel); bxSentinel.style.gridColumn = "1 / -1"; bxSentinel.style.height = "1px"; bxObs.observe(bxSentinel); }
+}
+function frameDiv(x, pos, label) {
+  const d = document.createElement("div");
+  const f = document.createElement("div"); f.className = "f";
+  f.style.aspectRatio = `${x.width || 16} / ${x.height || 9}`; f.style.backgroundPosition = `${pos}% 0`;
+  lazyBg(f, posterUrl(x.spec));
+  d.append(f);
+  if (label) { const s = document.createElement("span"); s.textContent = label; d.append(s); }
+  return d;
+}
+function card(x, n) {
+  const c = document.createElement("div");
+  c.className = "vc" + (BX.pick === x ? " on" : "");
+  const im = document.createElement("div"); im.className = "im";
+  const f = frameDiv(x, 50).firstChild; im.append(f);
+  im.insertAdjacentHTML("beforeend", `<span class="badge dur">${FK.dur(x.duration)}</span>${n ? `<span class="badge inmix">in mix${n > 1 ? ` ×${n}` : ""}</span>` : ""}`);
+  const ends = document.createElement("div"); ends.className = "ends";
+  ends.append(frameDiv(x, 0, "first"), frameDiv(x, 100, "last"));
+  c.append(im, ends);
+  c.insertAdjacentHTML("beforeend", `<div class="nm"></div><div class="meta"></div>`);
+  c.querySelector(".nm").textContent = x.name;
+  c.querySelector(".meta").textContent = `${vidMeta(x)} · ${x.folder}`;
+  c.title = `${x.folder}/${x.file}`;
+  let hv = null;
+  im.onmouseenter = () => { hv = setTimeout(() => {   // hover: play it, silently
+    const v = document.createElement("video"); v.muted = true; v.loop = true; v.autoplay = true; v.playsInline = true; v.src = videoUrl(x);
+    im.append(v);
+  }, 250); };
+  im.onmouseleave = () => { clearTimeout(hv); im.querySelectorAll("video").forEach(v => { v.pause(); v.removeAttribute("src"); v.load(); v.remove(); }); };
+  c.onclick = () => { BX.pick = x; $("bxGrid").querySelectorAll(".vc.on").forEach(e => e.classList.remove("on")); c.classList.add("on"); bxSide(x); };
+  c.ondblclick = () => addVideo(x.spec, M.vclips.length);
+  return c;
+}
+function bxSide(x) {
+  const sd = $("bxSide");
+  sd.innerHTML = `<video id="bxPlayer" controls autoplay playsinline></video>
+    <div id="bxEnds"><div><div class="f a"></div>first frame</div><div><div class="f z"></div>last frame</div></div>
+    <b class="nm" style="word-break:break-word"></b><div class="dim meta" style="font-size:12px;margin-top:2px"></div>
+    <div class="dim path" style="font-size:11px;word-break:break-all;margin-top:2px"></div>
+    <div class="acts">
+      <button class="primary" data-a="end">＋ Add at the end</button>
+      <button data-a="ph">Insert at the playhead (${fmt(now())})</button>
+      <button data-a="rep">Replace the selected clip</button>
+    </div>
+    <div class="dim note" style="font-size:12px;margin-top:6px"></div>`;
+  sd.querySelector("#bxPlayer").src = videoUrl(x);
+  for (const [cls, pos] of [["a", 0], ["z", 100]]) {
+    const f = sd.querySelector(`.f.${cls}`);
+    f.style.aspectRatio = `${x.width || 16} / ${x.height || 9}`; f.style.backgroundPosition = `${pos}% 0`;
+    f.style.backgroundImage = `url("${posterUrl(x.spec)}")`;
+  }
+  sd.querySelector(".nm").textContent = x.name;
+  sd.querySelector(".meta").textContent = vidMeta(x);
+  sd.querySelector(".path").textContent = `${x.folder}/${x.file}`;
+  const v = selV(), rep = sd.querySelector('[data-a="rep"]');
+  rep.disabled = !v;
+  sd.querySelector(".note").textContent = v ? `Replaces ${M.sources[v.skey]?.name || "the selected clip"}, keeping its transition and volume.` : "Select a clip on the video track to replace it.";
+  sd.querySelector('[data-a="end"]').onclick = () => addVideo(x.spec, M.vclips.length);
+  sd.querySelector('[data-a="ph"]').onclick = () => addVideo(x.spec, insertIndexAt(now()));
+  rep.onclick = () => replaceVideo(x.spec);
+}
+$("browseBtn").onclick = openBrowser;
+$("bxClose").onclick = closeBrowser;
+$("browser").onmousedown = e => { if (e.target === $("browser")) closeBrowser(); };
+let bxT = null;
+$("bxQ").oninput = () => { clearTimeout(bxT); bxT = setTimeout(() => { BX.q = $("bxQ").value; bxFilter(); }, 150); };
+$("bxFolder").onchange = () => { BX.folder = $("bxFolder").value; bxSave(); bxFilter(); };
+$("bxSort").onchange = () => { BX.sort = $("bxSort").value; bxSave(); bxFilter(); };
+$("bxSize").onchange = () => { BX.size = $("bxSize").value; bxSave(); $("bxGrid").style.setProperty("--card", `${BX.size}px`); };
+$("bxChains").onchange = () => { BX.chains = $("bxChains").checked; bxSave(); bxFilter(); };
+function refreshBadges() {   // after adding, mark the cards now in the mix
+  if ($("browser").classList.contains("hidden")) return;
+  const inMix = {};
+  for (const v of M.vclips) inMix[v.skey] = (inMix[v.skey] || 0) + 1;
+  [...$("bxGrid").querySelectorAll(".vc")].forEach((c, k) => {
+    const x = BX.list[k], n = x && inMix[x.key];
+    c.querySelector(".inmix")?.remove();
+    if (n) c.querySelector(".im").insertAdjacentHTML("beforeend", `<span class="badge inmix">in mix${n > 1 ? ` ×${n}` : ""}</span>`);
+  });
+}
+
+async function srcInfo(spec) {
+  const s = await FK.api(`/api/mixes/${MID}/source?${new URLSearchParams(spec)}`);
+  M.sources[s.skey] = {...s, ok: true};
+  return s;
+}
+async function replaceVideo(spec) {
+  const v = selV();
+  if (!v) return FK.toast("Select a clip on the video track first.", true);
+  try {
+    const s = await srcInfo(spec);
+    Object.assign(v, {src: s.src, skey: s.skey, in: 0, out: s.duration});
+    relayout();
+    await saveNow();
+    render(); sync(now(), true); refreshBadges();
+    const note = document.querySelector("#bxSide .note");
+    if (note) note.textContent = `Replaced: the selected clip is now ${s.name}.`;
+    FK.toast(`Replaced with ${s.name}`);
+  } catch (e) { FK.fail(e); }
+}
+async function addVideo(spec, index) {
+  try {
+    const s = await srcInfo(spec);
+    const v = {id: newId(), src: s.src, skey: s.skey, in: 0, out: s.duration, transition: {type: "cut", dur: 0.5}, volume_db: 0, mute: false};
+    M.vclips.splice(Math.max(0, Math.min(M.vclips.length, index)), 0, v);
+    sel = v.id;
+    relayout();
+    await saveNow();                       // thumbnails and the preview only serve sources the saved mix uses
+    render(); sync(now(), true); refreshBadges();
+    if (!$("browser").classList.contains("hidden")) FK.toast(`Added ${s.name}`);
+  } catch (e) { FK.fail(e); }
+}
+function insertIndexAt(t, except) {       // where a clip dropped at time t goes in the order
+  let k = 0;
+  M.layout.forEach((r, i) => { if (M.vclips[i] !== except && r.start + r.len / 2 < t) k++; });
+  return k;
+}
+
 /* ---- rendering the timeline ---- */
-function segColor(k) { return `hsl(${(k * 137.5 + 210) % 360} 40% 32%)`; }
 function render() {
   const tl = $("tl");
-  const W = Math.ceil(M.duration * pps) + 40;
+  const W = Math.ceil(span() * pps) + 40;
   tl.style.width = `${HEAD + W}px`;
   tl.classList.toggle("mx-cut", tool === "cut");
   tl.innerHTML = "";
@@ -259,33 +665,35 @@ function render() {
   const ruler = row("mx-ruler", "<span class='dim'>time</span>", W);
   const lane = ruler.querySelector(".mx-lane");
   const step = [0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 30, 60, 120].find(s => s * pps >= 70) || 300;
-  for (let t = 0; t <= M.duration + 1e-6; t += step) {
+  for (let t = 0; t <= span() + 1e-6; t += step) {
     const k = document.createElement("div"); k.className = "mx-tick"; k.style.left = `${t * pps}px`;
     k.textContent = t >= 60 ? fmt(t).replace(/\.00$/, "") : `${+t.toFixed(2)}s`; lane.append(k);
   }
   lane.onmousedown = e => seek(tAt(e, lane));
   tl.append(ruler);
-  // video row with segments between the markers
-  const vrow = row("mx-video", `<span>Video</span><span class="dim">${M.markers.length ? `${M.markers.length + 1} parts` : ""}</span>`, W);
-  const bounds = [0, ...M.markers.map(m => m.t), M.duration];
-  for (let k = 0; k + 1 < bounds.length; k++) {
-    const s = document.createElement("div"); s.className = "mx-seg";
-    s.style.left = `${bounds[k] * pps}px`; s.style.width = `${Math.max(1, (bounds[k + 1] - bounds[k]) * pps - 2)}px`;
-    s.style.background = segColor(k); s.textContent = M.markers.length ? (k ? M.markers[k - 1].label : "start") : M.video_name;
-    vrow.querySelector(".mx-lane").append(s);
-  }
-  tl.append(vrow);
-  // original audio
-  const orow = row("mx-track mx-orig", `<div class="row"><b>Original audio</b></div>
-      <div class="row"><input type="range" min="-30" max="12" step="0.5" class="ov"><button class="small om"></button></div>`, W);
-  orow.querySelector(".mx-lane").style.height = "30px";
-  const ov = orow.querySelector(".ov"), om = orow.querySelector(".om");
-  ov.value = M.original.volume_db; ov.title = `${M.original.volume_db} dB`;
+  // the video track: clips in order, with their own audio's level and mute
+  const vrow = row("mx-video", `<div class="row"><b>Video</b><span class="dim">${M.vclips.length} clip${M.vclips.length === 1 ? "" : "s"}</span></div>
+      <div class="row" title="the videos' own audio"><input type="range" min="-30" max="12" step="0.5" class="ov"><button class="small om"></button></div>`, W);
+  const ov = vrow.querySelector(".ov"), om = vrow.querySelector(".om");
+  ov.value = M.original.volume_db; ov.title = `video audio ${M.original.volume_db} dB`;
   om.textContent = M.original.mute ? "muted" : "mute";
-  if (!M.has_audio) { ov.disabled = om.disabled = true; orow.querySelector(".mx-lane").innerHTML = '<span class="dim" style="padding:6px;display:block">this video has no audio</span>'; }
-  ov.oninput = () => { M.original.volume_db = +ov.value; ov.title = `${ov.value} dB`; applyOrig(); dirty(); };
-  om.onclick = () => { M.original.mute = !M.original.mute; render(); applyOrig(); dirty(); };
-  tl.append(orow);
+  if (!M.has_audio && M.vclips.length) ov.title = "these videos have no audio";
+  ov.oninput = () => { M.original.volume_db = +ov.value; ov.title = `video audio ${ov.value} dB`; applyOrig(); dirty(); };
+  om.onclick = () => { M.original.mute = !M.original.mute; render(); applyOrig(); dirty(true); };
+  const vl = vrow.querySelector(".mx-lane");
+  if (!M.vclips.length) vl.innerHTML = '<span class="dim" style="padding:24px 8px;display:block">Drag videos here from the Videos tab.</span>';
+  M.vclips.forEach((v, i) => vl.append(vclipEl(v, i)));
+  vl.ondragover = e => {
+    if (![...e.dataTransfer.types].includes("text/x-video")) return;
+    e.preventDefault(); vrow.classList.add("drop"); showIns(insertIndexAt(tAt(e, vl)));
+  };
+  vl.ondragleave = () => { vrow.classList.remove("drop"); showIns(null); };
+  vl.ondrop = e => {
+    e.preventDefault(); vrow.classList.remove("drop"); showIns(null);
+    addVideo(JSON.parse(e.dataTransfer.getData("text/x-video")), insertIndexAt(tAt(e, vl)));
+  };
+  vl.onmousedown = e => { if (e.target === vl) { sel = null; seek(tAt(e, vl)); render(); } };
+  tl.append(vrow);
   // sound tracks
   for (const t of M.tracks) {
     const r = row("mx-track", `<div class="row"><input class="tn" style="width:100%;font-size:12px"><button class="small tx" title="remove track">✕</button></div>
@@ -320,15 +728,15 @@ function render() {
     for (const c of M.clips.filter(c => c.track === t.id)) ln.append(clipEl(c));
     tl.append(r);
   }
-  // markers across all rows, the playhead and the cut guide
+  // markers across all rows, the playhead, the cut guide and the insertion mark
   for (const m of M.markers) {
-    const k = document.createElement("div"); k.className = "mx-mark"; k.style.left = `${HEAD + m.t * pps}px`;
+    const k = document.createElement("div"); k.className = "mx-mark" + (m.join ? " join" : ""); k.style.left = `${HEAD + m.t * pps}px`;
     k.innerHTML = `<span>${esc(m.label)}</span>`; tl.append(k);
   }
-  const ph = document.createElement("div"); ph.id = "ph"; tl.append(ph);
-  const cg = document.createElement("div"); cg.id = "cutGuide"; tl.append(cg);
+  for (const id of ["ph", "cutGuide", "insMark"]) { const d = document.createElement("div"); d.id = id; tl.append(d); }
   movePlayhead();
   inspector();
+  info();
 }
 function row(cls, head, W) {
   const r = document.createElement("div");
@@ -336,8 +744,114 @@ function row(cls, head, W) {
   r.innerHTML = `<div class="mx-head">${head}</div><div class="mx-lane" style="width:${W}px"></div>`;
   return r;
 }
-const tAt = (e, lane) => Math.max(0, Math.min(M.duration, (e.clientX - lane.getBoundingClientRect().left) / pps));
+const tAt = (e, lane) => Math.max(0, Math.min(span(), (e.clientX - lane.getBoundingClientRect().left) / pps));
+function showIns(k) {
+  const m = $("insMark");
+  if (!m) return;
+  if (k == null) { m.style.display = "none"; return; }
+  const t = k < M.layout.length ? M.layout[k].start : M.duration;
+  m.style.display = "block"; m.style.left = `${HEAD + t * pps}px`;
+}
 
+/* ---- video clips ---- */
+function vclipEl(v, i) {
+  const r = M.layout[i], s = M.sources[v.skey] || {ok: false, name: "missing"};
+  const d = document.createElement("div");
+  d.className = "mx-vclip" + (v.id === sel ? " sel" : "") + (s.ok ? "" : " missing");
+  d.dataset.id = v.id;
+  d.style.zIndex = 1 + i;
+  placeEl(d, r);
+  const w = r.len * pps;
+  d.innerHTML = `<div class="th"></div><span class="nm"></span><div class="h l"></div><div class="h r"></div>`;
+  d.querySelector(".nm").textContent = s.ok ? s.name : `missing: ${s.name}`;
+  const hw = Math.max(2, Math.min(7, Math.floor(w / 4)));
+  d.querySelectorAll(".h").forEach(h => h.style.width = `${hw}px`);
+  if (r.overlap > 0) {
+    const o = document.createElement("div");
+    o.className = "ovl" + (v.transition.type === "fadeblack" ? " black" : "");
+    o.style.width = `${r.overlap * pps}px`; o.title = `${M.options.transitions[v.transition.type]} ${r.overlap.toFixed(2)} s`;
+    d.append(o);
+  }
+  const tags = [v.mute ? "muted" : Math.abs(v.volume_db) > 0.01 ? `${v.volume_db > 0 ? "+" : ""}${v.volume_db} dB` : ""].filter(Boolean);
+  if (tags.length) { const tg = document.createElement("span"); tg.className = "tag"; tg.textContent = tags.join(" "); d.append(tg); }
+  d.title = `${s.name} · ${v.in.toFixed(2)}–${v.out.toFixed(2)} s of the source · at ${r.start.toFixed(2)} s`;
+  if (s.ok) {  // thumbnails along the clip (times rounded so zooming reuses them)
+    const th = d.querySelector(".th"), h = 70 - 8 - 2 - 15, tw = Math.max(20, Math.round(h * s.width / Math.max(1, s.height)));
+    const n = Math.min(40, Math.max(1, Math.ceil(w / tw)));
+    for (let k = 0; k < n; k++) {
+      const t = Math.min(v.out - 0.05, v.in + (k * tw + tw / 2) / pps);
+      const img = document.createElement("img"); img.loading = "lazy"; img.style.width = `${tw}px`;
+      img.src = `/media/mix/${MID}/thumb/${v.skey}?t=${(Math.round(t * 4) / 4).toFixed(2)}`;
+      th.append(img);
+    }
+  }
+  d.onmousedown = e => vclipDown(e, v, d);
+  d.onmousemove = e => {
+    if (tool !== "cut") return;
+    const g = $("cutGuide"); g.style.display = "block";
+    g.style.left = `${HEAD + frameT(tAt(e, d.parentElement)) * pps}px`;
+  };
+  d.onmouseleave = () => { $("cutGuide").style.display = "none"; };
+  return d;
+}
+function placeEl(d, r) { d.style.left = `${r.start * pps}px`; d.style.width = `${Math.max(4, r.len * pps)}px`; }
+function placeAll() {  // reposition the video clips after a trim, without rebuilding
+  for (const r of M.layout) { const d = document.querySelector(`.mx-vclip[data-id="${r.id}"]`); if (d) placeEl(d, r); }
+}
+const frameT = t => Math.round(t * M.out.fps) / M.out.fps;
+function vclipDown(e, v, el) {
+  e.stopPropagation(); e.preventDefault();
+  const lane = el.parentElement, t0 = tAt(e, lane);
+  if (tool === "cut") { splitV(v, t0); return; }
+  sel = v.id;
+  document.querySelectorAll(".mx-vclip.sel, .mx-clip.sel").forEach(x => x.classList.remove("sel")); el.classList.add("sel");
+  inspector();
+  const mode = e.target.classList.contains("l") ? "l" : e.target.classList.contains("r") ? "r" : "move";
+  const o = {...v}, s = M.sources[v.skey] || {}, sdur = s.ok ? s.duration : Infinity, r0 = {...rowOf(v)};
+  let moved = false, k = null;
+  const mv = ev => {
+    const dt = (ev.clientX - e.clientX) / pps;
+    if (Math.abs(ev.clientX - e.clientX) > 2) moved = true;
+    if (!moved) return;
+    if (mode === "move") {          // drag to reorder
+      el.classList.add("drag"); el.style.transform = `translateX(${dt * pps}px)`;
+      k = insertIndexAt(r0.start + r0.len / 2 + dt, v);
+      const order = M.vclips.filter(x => x !== v), at = k < order.length ? rowOf(order[k]).start : M.duration;
+      const m = $("insMark"); m.style.display = "block"; m.style.left = `${HEAD + at * pps}px`;
+      return;
+    }
+    if (mode === "r") {             // the end: snaps to marks and the playhead on the timeline
+      const end = snapT(r0.start + (o.out - o.in) + dt, null, ev);
+      v.out = Math.max(o.in + 0.1, Math.min(sdur, o.in + (end - r0.start)));
+    } else {
+      v.in = Math.max(0, Math.min(o.out - 0.1, o.in + dt));
+    }
+    relayout(); placeAll(); inspector(); info();
+  };
+  const up = () => {
+    removeEventListener("mousemove", mv);
+    $("insMark") && ($("insMark").style.display = "none");
+    if (!moved) return;
+    if (mode === "move" && k != null) {
+      const i = M.vclips.indexOf(v);
+      M.vclips.splice(i, 1); M.vclips.splice(k, 0, v);
+    }
+    relayout(); render(); dirty(true); sync(now(), true);
+  };
+  addEventListener("mousemove", mv); addEventListener("mouseup", up, {once: true});
+}
+function splitV(v, t) {
+  const r = rowOf(v);
+  t = frameT(t);
+  if (t <= r.start + 0.05 || t >= r.start + r.len - 0.05) return;
+  const local = v.in + (t - r.start);
+  const b = {...v, id: newId(), in: local, transition: {type: "cut", dur: v.transition.dur}};
+  v.out = local;
+  M.vclips.splice(M.vclips.indexOf(v) + 1, 0, b);
+  sel = b.id; relayout(); render(); dirty(true);
+}
+
+/* ---- sound clips ---- */
 function clipEl(c) {
   const s = SND[c.sound];
   const d = document.createElement("div");
@@ -382,9 +896,10 @@ function drawClip(cv, c, s) {
   }
 }
 
-/* ---- snapping: markers, playhead, 0, the end, other clips' edges ---- */
+/* ---- snapping: markers and joins, playhead, 0, the end, other clips' edges ---- */
 function snapPoints(except) {
-  const pts = [0, M.duration, V().currentTime, ...M.markers.map(m => m.t)];
+  const pts = [0, M.duration, now(), ...M.markers.map(m => m.t)];
+  for (const r of M.layout) pts.push(r.start + r.len);
   for (const c of M.clips) if (c !== except) pts.push(c.start, c.start + c.length);
   return pts;
 }
@@ -396,7 +911,7 @@ function snapT(t, except, e) {
   return best;
 }
 
-/* ---- clip interaction: select, move (also between tracks), trim either edge, cut ---- */
+/* ---- sound clip interaction: select, move (also between tracks), trim either edge, cut ---- */
 function clipDown(e, c, el) {
   e.stopPropagation(); e.preventDefault();
   const lane = el.parentElement, t0 = tAt(e, lane);
@@ -404,7 +919,7 @@ function clipDown(e, c, el) {
   sel = c.id;
   const mode = e.target.classList.contains("l") ? "l" : e.target.classList.contains("r") ? "r" : "move";
   const o = {...c}, s = SND[c.sound], sdur = s ? s.duration : Infinity;
-  document.querySelectorAll(".mx-clip.sel").forEach(x => x.classList.remove("sel")); el.classList.add("sel");
+  document.querySelectorAll(".mx-clip.sel, .mx-vclip.sel").forEach(x => x.classList.remove("sel")); el.classList.add("sel");
   inspector();
   let moved = false;
   const mv = ev => {
@@ -452,8 +967,9 @@ function split(c, t) {
 function addClip(sid, track, t) {
   const s = SND[sid];
   if (!s) return;
-  const start = snapT(Math.max(0, Math.min(M.duration - 0.05, t)));
-  const c = {id: newId(), track, sound: sid, start, offset: 0, length: Math.min(s.duration, M.duration - start),
+  const end = M.duration > 0 ? M.duration : span();
+  const start = snapT(Math.max(0, Math.min(end - 0.05, t)));
+  const c = {id: newId(), track, sound: sid, start, offset: 0, length: Math.min(s.duration, end - start),
              match: true, nr: "off", lowcut: 0, highcut: 0, declick: false, pan: 0,
              loop: false, volume_db: 0, fade_in: 0, fade_out: 0};
   M.clips.push(c); sel = c.id; prepare(c); render(); dirty(true);
@@ -467,22 +983,32 @@ function setTool(t) {
 $("toolSel").onclick = () => setTool("sel");
 $("toolCut").onclick = () => setTool("cut");
 function splitAtPlayhead() {
-  const t = V().currentTime, c = M.clips.find(x => x.id === sel);
-  const targets = c && t > c.start && t < c.start + c.length ? [c] : M.clips.filter(x => t > x.start && t < x.start + x.length);
-  if (!targets.length) return FK.toast("No clip under the playhead.", true);
-  targets.forEach(x => split(x, t));
+  const t = now(), v = selV(), c = selA();
+  if (v) { const r = rowOf(v); if (t > r.start && t < r.start + r.len) return splitV(v, t); }
+  if (c && t > c.start && t < c.start + c.length) return split(c, t);
+  const vs = M.layout.filter(r => t > r.start + 0.05 && t < r.start + r.len - 0.05);
+  const cs = M.clips.filter(x => t > x.start && t < x.start + x.length);
+  if (!vs.length && !cs.length) return FK.toast("Nothing under the playhead.", true);
+  if (vs.length) splitV(M.vclips.find(x => x.id === vs[vs.length - 1].id), t);   // the clip on top
+  cs.forEach(x => split(x, t));
 }
 $("splitBtn").onclick = splitAtPlayhead;
 function duplicate() {
-  const c = M.clips.find(x => x.id === sel);
+  const v = selV(), c = selA();
+  if (v) {
+    const d = {...v, id: newId(), transition: {type: "cut", dur: v.transition.dur}};
+    M.vclips.splice(M.vclips.indexOf(v) + 1, 0, d); sel = d.id; relayout(); render(); dirty(true); return;
+  }
   if (!c) return;
-  const d = {...c, id: newId(), start: Math.min(M.duration - 0.05, c.start + c.length)};
+  const d = {...c, id: newId(), start: Math.min(Math.max(0, span() - 0.05), c.start + c.length)};
   M.clips.push(d); sel = d.id; render(); dirty(true);
 }
 $("dupBtn").onclick = duplicate;
 function removeSel() {
   if (!sel) return;
-  M.clips = M.clips.filter(x => x.id !== sel); sel = null; render(); dirty(true);
+  if (selV()) { M.vclips = M.vclips.filter(x => x.id !== sel); relayout(); sync(now(), true); }
+  else M.clips = M.clips.filter(x => x.id !== sel);
+  sel = null; render(); dirty(true);
 }
 $("delBtn").onclick = removeSel;
 $("addTrack").onclick = () => {
@@ -491,26 +1017,34 @@ $("addTrack").onclick = () => {
   M.tracks.push({id: `t${n}`, name: `Track ${n}`, volume_db: 0, mute: false}); render(); dirty();
 };
 document.addEventListener("keydown", e => {
-  if (!M || e.target.matches("input, select, textarea")) return;
+  if (!M) return;
+  if (!$("browser").classList.contains("hidden")) { if (e.key === "Escape") closeBrowser(); return; }
+  if (e.target.matches("input, select, textarea")) return;
   const k = e.key.toLowerCase();
+  if (k === "b" && !e.ctrlKey) { e.preventDefault(); openBrowser(); return; }
   if (k === " ") { e.preventDefault(); $("playBtn").click(); }
   else if (k === "v") setTool("sel");
   else if (k === "c" && !e.ctrlKey) setTool("cut");
   else if (k === "s" && !e.ctrlKey) { e.preventDefault(); splitAtPlayhead(); }
   else if (k === "d" && e.ctrlKey) { e.preventDefault(); duplicate(); }
   else if (k === "delete" || k === "backspace") { e.preventDefault(); removeSel(); }
-  else if ((k === "arrowleft" || k === "arrowright") && sel) {
+  else if ((k === "arrowleft" || k === "arrowright") && selA()) {
     e.preventDefault();
-    const c = M.clips.find(x => x.id === sel), step = e.shiftKey ? 0.1 : 1 / (M.fps || 16);
+    const c = selA(), step = e.shiftKey ? 0.1 : 1 / (M.out.fps || 16);
     c.start = Math.max(0, c.start + (k === "arrowleft" ? -step : step)); render(); dirty(true);
+  }
+  else if ((k === "arrowleft" || k === "arrowright") && !sel) {   // step a frame
+    e.preventDefault(); seek(now() + (k === "arrowleft" ? -1 : 1) * (e.shiftKey ? 1 : 1 / M.out.fps));
   }
   else if (k === "escape") setTool("sel");
 });
 
-/* ---- inspector for the selected clip ---- */
+/* ---- inspectors ---- */
 function inspector() {
-  const c = M.clips.find(x => x.id === sel);
+  const c = selA(), v = selV();
   $("insp").classList.toggle("hidden", !c);
+  $("vinsp").classList.toggle("hidden", !v);
+  if (v) vInspector(v);
   if (!c) return;
   const s = SND[c.sound];
   $("iName").textContent = s ? s.name : "missing sound";
@@ -523,11 +1057,34 @@ function inspector() {
   fillHz($("iLow"), M.options.lowcut, c.lowcut || 0); fillHz($("iHigh"), M.options.highcut, c.highcut || 0);
   $("iBusy").textContent = pending.has(c.id) ? "processing…" : "";
 }
-function edit(fn) { const c = M.clips.find(x => x.id === sel); if (!c) return; fn(c, SND[c.sound]); render(); dirty(true); }
+function vInspector(v) {
+  const s = M.sources[v.skey] || {}, r = rowOf(v), i = M.vclips.indexOf(v);
+  $("vName").textContent = s.name || "missing video";
+  $("vInfo").textContent = s.ok ? ` · ${s.width}×${s.height} · ${+(+s.fps).toFixed(3)} fps · ${s.duration.toFixed(2)} s${s.has_audio ? "" : " · no audio"}` : ` · ${s.error || "missing"}`;
+  $("vIn").value = v.in.toFixed(2); $("vOut").value = v.out.toFixed(2);
+  $("vLen").textContent = r ? `${r.len.toFixed(2)} s · ${r.frames} frames · at ${fmt(r.start)}` : "";
+  if (!$("vTr").options.length) for (const [k, t] of Object.entries(M.options.transitions)) $("vTr").add(new Option(t, k));
+  $("vTr").value = v.transition.type; $("vTrD").value = v.transition.dur;
+  $("vTr").disabled = !i; $("vTrD").disabled = !i || v.transition.type === "cut";
+  $("vTrNote").textContent = !i ? "(first clip)" : r && v.transition.type !== "cut" && r.overlap + 1e-6 < v.transition.dur ? `shortened to ${r.overlap.toFixed(2)} s (half a clip)` : "";
+  $("vVol").value = v.volume_db; $("vVolV").textContent = `${v.volume_db > 0 ? "+" : ""}${v.volume_db} dB`;
+  $("vMute").checked = !!v.mute;
+  $("vVol").disabled = $("vMute").disabled = s.ok && !s.has_audio;
+}
+function vEdit(fn) { const v = selV(); if (!v) return; fn(v, M.sources[v.skey] || {}); relayout(); render(); dirty(true); sync(now(), true); }
+$("vIn").onchange = () => vEdit(v => v.in = Math.max(0, Math.min(v.out - 0.1, +$("vIn").value)));
+$("vOut").onchange = () => vEdit((v, s) => v.out = Math.max(v.in + 0.1, Math.min(s.ok ? s.duration : Infinity, +$("vOut").value)));
+$("vTr").onchange = () => vEdit(v => v.transition.type = $("vTr").value);
+$("vTrD").onchange = () => vEdit(v => v.transition.dur = Math.max(0.05, Math.min(5, +$("vTrD").value || 0.5)));
+$("vVol").oninput = () => { const v = selV(); if (!v) return; v.volume_db = +$("vVol").value; $("vVolV").textContent = `${v.volume_db} dB`; dirty(true); };
+$("vVol").onchange = () => render();
+$("vMute").onchange = () => vEdit(v => v.mute = $("vMute").checked);
+
+function edit(fn) { const c = selA(); if (!c) return; fn(c, SND[c.sound]); render(); dirty(true); }
 $("iStart").onchange = () => edit(c => c.start = Math.max(0, +$("iStart").value));
 $("iLen").onchange = () => edit((c, s) => c.length = Math.max(0.05, c.loop || !s ? +$("iLen").value : Math.min(+$("iLen").value, s.duration - c.offset)));
 $("iOff").onchange = () => edit((c, s) => c.offset = Math.max(0, c.loop || !s ? +$("iOff").value : Math.min(+$("iOff").value, s.duration - 0.05)));
-$("iVol").oninput = () => { const c = M.clips.find(x => x.id === sel); if (!c) return; c.volume_db = +$("iVol").value; $("iVolV").textContent = `${c.volume_db} dB`; dirty(true); };
+$("iVol").oninput = () => { const c = selA(); if (!c) return; c.volume_db = +$("iVol").value; $("iVolV").textContent = `${c.volume_db} dB`; dirty(true); };
 $("iFi").onchange = () => edit(c => c.fade_in = Math.max(0, Math.min(+$("iFi").value, c.length / 2)));
 $("iFo").onchange = () => edit(c => c.fade_out = Math.max(0, Math.min(+$("iFo").value, c.length / 2)));
 $("iLoop").onchange = () => edit((c, s) => { c.loop = $("iLoop").checked; if (!c.loop && s) c.length = Math.min(c.length, s.duration - c.offset); });
@@ -536,7 +1093,7 @@ function fillHz(sel, list, v) {
   if (!sel.options.length) for (const f of list) sel.add(new Option(f ? (f >= 1000 ? `${f / 1000} kHz` : `${f} Hz`) : "off", f));
   sel.value = String(v);
 }
-$("iPan").oninput = () => { const c = M.clips.find(x => x.id === sel); if (!c) return; c.pan = +$("iPan").value; $("iPanV").textContent = panText(c.pan); dirty(true); };
+$("iPan").oninput = () => { const c = selA(); if (!c) return; c.pan = +$("iPan").value; $("iPanV").textContent = panText(c.pan); dirty(true); };
 $("iPan").onchange = () => render();
 $("iPan").ondblclick = () => { $("iPan").value = 0; $("iPan").oninput(); render(); };
 const fxEdit = fn => edit(c => { fn(c); prepare(c); });
@@ -545,6 +1102,42 @@ $("iNr").onchange = () => fxEdit(c => c.nr = $("iNr").value);
 $("iLow").onchange = () => fxEdit(c => c.lowcut = +$("iLow").value);
 $("iHigh").onchange = () => fxEdit(c => c.highcut = +$("iHigh").value);
 $("iClick").onchange = () => fxEdit(c => c.declick = $("iClick").checked);
+
+/* ---- output settings ---- */
+function initOutput() {
+  const st = M.settings, o = M.out, opt = M.options;
+  $("oSize").innerHTML = "";
+  for (const sz of opt.sizes) $("oSize").add(new Option(sz === "auto" ? `auto (${o.auto_size ? `${o.width}×${o.height}` : "first clip"})` : sz.replace("x", "×"), sz));
+  $("oSize").add(new Option("custom…", "custom"));
+  const known = opt.sizes.includes(st.size);
+  $("oSize").value = known ? st.size : "custom";
+  $("oCustom").classList.toggle("hidden", known);
+  $("oW").value = o.width; $("oH").value = o.height;
+  $("oFps").innerHTML = "";
+  for (const f of opt.fps) $("oFps").add(new Option(f === "auto" ? `auto (${o.auto_fps ? `${+o.fps.toFixed(3)}` : "most common"})` : f, f));
+  $("oFps").value = st.fps;
+  if (!$("oFit").options.length) for (const [k, t] of Object.entries(opt.fits)) $("oFit").add(new Option(t, k));
+  $("oFit").value = st.fit;
+  const odd = M.vclips.filter(v => { const s = M.sources[v.skey]; return s?.ok && Math.abs(s.width / s.height - o.width / o.height) > 0.01; }).length;
+  const slow = M.vclips.filter(v => { const s = M.sources[v.skey]; return s?.ok && s.fps_frac !== o.fps_frac; }).length;
+  $("oNote").textContent = [odd ? `${odd} clip${odd > 1 ? "s" : ""} of another shape` : "", slow ? `${slow} at another frame rate` : ""].filter(Boolean).join(" · ");
+  $("stage").classList.toggle("crop", st.fit === "crop");
+  sizeStage();
+}
+function setOut(fn) { fn(M.settings); dirty(true); }
+$("oSize").onchange = () => {
+  if ($("oSize").value === "custom") { $("oCustom").classList.remove("hidden"); return; }
+  setOut(st => st.size = $("oSize").value);
+};
+$("oW").onchange = $("oH").onchange = () => setOut(st => st.size = `${Math.round(+$("oW").value / 2) * 2}x${Math.round(+$("oH").value / 2) * 2}`);
+$("oFps").onchange = () => setOut(st => st.fps = $("oFps").value);
+$("oFit").onchange = () => { setOut(st => st.fit = $("oFit").value); $("stage").classList.toggle("crop", M.settings.fit === "crop"); };
+function sizeStage() {
+  const box = $("stageBox"), o = M.out, w = box.clientWidth, maxH = Math.max(160, innerHeight * 0.46);
+  let h = w * o.height / o.width, ww = w;
+  if (h > maxH) { h = maxH; ww = h * o.width / o.height; }
+  $("stage").style.width = `${ww}px`; $("stage").style.height = `${h}px`;
+}
 
 /* ---- master ---- */
 function initMaster() {
@@ -569,49 +1162,71 @@ $("mLim").onchange = () => masterEdit(ms => ms.limiter = $("mLim").checked);
 $("mCeil").onchange = () => masterEdit(ms => ms.ceiling = +$("mCeil").value);
 $("mGlue").onchange = () => masterEdit(ms => ms.glue = $("mGlue").checked);
 $("measureBtn").onclick = async () => {
-  clearTimeout(saveT);
   try {
-    await putMix();
+    await saveNow();
     const j = await FK.runJob(`/api/mixes/${MID}/measure`, {}, $("bar"), $("barLbl"));
     M.measured = j.result; buildMaster(); measInfo();
   } catch (e) { FK.fail(e); }
 };
 
-/* ---- saving (debounced) ---- */
-let saveT = null;
+/* ---- saving (debounced); the server's answer brings the worked-out parts (output format,
+   placement, markers) unless something changed while it was saving ---- */
+let saveT = null, editN = 0;
 function dirty(resched) {
   $("saveState").textContent = "unsaved…";
+  editN++;
   clearTimeout(saveT);
-  saveT = setTimeout(async () => {
-    try {
-      const r = await putMix();
-      Object.assign(SND, r.sounds);
-      M.updated = r.updated; M.measured = r.measured; measInfo();
-      $("saveState").textContent = "saved";
-      await loadDuck();
-      if (!V().paused) schedule();
-    } catch (e) { $("saveState").textContent = "not saved"; FK.fail(e); }
-  }, 600);
-  if (resched && !V().paused) schedule();
+  saveT = setTimeout(() => saveNow().catch(() => {}), 600);
+  if (resched && playing) schedule();
 }
-function putMix() {
-  return FK.api(`/api/mixes/${MID}`, {method: "PUT", headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({name: M.name, original: M.original, tracks: M.tracks, clips: M.clips, master: M.master})});
+async function saveNow() {
+  clearTimeout(saveT);
+  const n = editN;
+  try {
+    const r = await FK.api(`/api/mixes/${MID}`, {method: "PUT", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({name: M.name, vclips: M.vclips, settings: M.settings, original: M.original, tracks: M.tracks,
+                            clips: M.clips, master: M.master})});
+    Object.assign(SND, r.sounds);
+    M.updated = r.updated; M.measured = r.measured;
+    if (n === editN) {
+      const was = {w: M.out.width, h: M.out.height, f: M.out.fps};
+      for (const k of ["vclips", "sources", "out", "layout", "duration", "markers", "has_audio", "fps", "settings"]) M[k] = r[k];
+      initOutput();
+      if (selV() || was.w !== M.out.width || was.h !== M.out.height || was.f !== M.out.fps) render(); else info();
+      $("saveState").textContent = "saved";
+    }
+    measInfo();
+    await loadDuck();
+    if (playing) schedule();
+    return r;
+  } catch (e) { $("saveState").textContent = "not saved"; FK.fail(e); throw e; }
 }
 async function loadDuck() {
   try { DUCK = await FK.api(`/api/mixes/${MID}/duck`); } catch { DUCK = {}; }
 }
 
-/* ---- preview: the video is the clock; sounds are scheduled with Web Audio ----
-   clip (processed copy when it has cleanup) -> fades and volume -> pan -> track gain, following the
-   same ducking curve the render uses -> master: glue, the loudness-target gain, limiter */
+/* ---- preview ----
+   One clock (the audio context's) drives everything. Two video players take turns: the clip
+   now on screen and the next one, loaded ahead; during a transition both play, blended the
+   way the render blends them. Each player's sound goes through its own gain (clip volume and
+   the crossfade) into the video audio level. Sounds are scheduled with Web Audio:
+   clip (processed copy when it has cleanup) -> fades and volume -> pan -> track gain, following
+   the same ducking curve the render uses -> master: glue, the loudness-target gain, limiter */
 let ctx = null, vgain = null, masterIn = null, masterNodes = [], live = [], DUCK = {};
+let playing = false, T = 0, T0 = 0, C0 = 0;
+const P = [];
 const bufs = {}, pending = new Set();
+function now() { return playing ? T0 + (ctx.currentTime - C0) : T; }
 function initAudio() {
   ctx = new AudioContext();
   masterIn = ctx.createGain();
   vgain = ctx.createGain();
-  ctx.createMediaElementSource(V()).connect(vgain).connect(masterIn);
+  vgain.connect(masterIn);
+  for (const el of [$("va"), $("vb")]) {
+    const g = ctx.createGain();
+    ctx.createMediaElementSource(el).connect(g).connect(vgain);
+    P.push({el, gain: g, clip: null, src: ""});
+  }
   buildMaster();
   applyOrig();
 }
@@ -640,6 +1255,55 @@ function levelDb() {  // the gain the loudness target will apply, from the last 
   return Math.max(-20, Math.min(20, +ms.target - me.lufs));
 }
 function applyOrig() { if (vgain) vgain.gain.value = M.original.mute ? 0 : dbGain(M.original.volume_db); }
+
+/* which clips are on screen at t, and how they blend */
+function sync(t, hard) {
+  const act = [];
+  M.layout.forEach((r, i) => { if (t >= r.start - 1e-6 && t < r.start + r.len - 1e-6) act.push(i); });
+  const want = act.map(i => ({i, pre: false}));
+  if (want.length < 2) {  // load the next clip ahead
+    const nx = M.layout.findIndex(r => r.start > t + 1e-6);
+    if (nx >= 0 && M.layout[nx].start - t < 3) want.push({i: nx, pre: true});
+  }
+  for (const s of P) if (s.clip && !want.some(w => M.layout[w.i].id === s.clip)) { s.clip = null; s.el.pause(); s.el.style.opacity = 0; s.gain.gain.value = 0; }
+  // blend: the later clip comes in over the earlier one
+  let p = 1, type = "cut";
+  if (act.length === 2) {
+    const r = M.layout[act[1]];
+    p = Math.max(0, Math.min(1, (t - r.start) / Math.max(1e-6, r.overlap)));
+    type = M.vclips[act[1]].transition.type;
+  }
+  for (const w of want) {
+    const v = M.vclips[w.i], r = M.layout[w.i], s0 = M.sources[v.skey];
+    let s = P.find(x => x.clip === v.id) || P.find(x => !x.clip);
+    if (!s || !s0?.ok) continue;
+    const url = `/media/mix/${MID}/src/${v.skey}`;
+    let fresh = false;
+    if (s.clip !== v.id) { s.clip = v.id; fresh = true; if (s.src !== url) { s.el.src = url; s.src = url; } }
+    if (w.pre) {
+      if (fresh) { s.el.pause(); s.el.currentTime = v.in; }
+      s.el.style.opacity = 0; s.gain.gain.value = 0;
+      continue;
+    }
+    const local = v.in + (t - r.start);
+    const drift = s.el.currentTime - local;
+    if (hard || fresh || (!playing && Math.abs(drift) > 0.01) || Math.abs(drift) > 0.5) { if (!s.el.seeking || hard) s.el.currentTime = local; s.el.playbackRate = 1; }
+    else if (playing) s.el.playbackRate = Math.abs(drift) < 0.04 ? 1 : drift > 0 ? 0.95 : 1.05;   // catch up gently
+    if (playing && s.el.paused) s.el.play().catch(() => {});
+    if (!playing && !s.el.paused) s.el.pause();
+    const vol = v.mute ? 0 : dbGain(v.volume_db);
+    let op = 1, g = 1;
+    if (act.length === 2) {
+      const incoming = w.i === act[1];
+      if (type === "fadeblack") op = incoming ? Math.max(0, 2 * p - 1) : Math.max(0, 1 - 2 * p);
+      else op = incoming ? p : 1;
+      g = incoming ? p : 1 - p;
+    }
+    s.el.style.opacity = op; s.el.style.zIndex = w.i === act[act.length - 1] ? 2 : 1;
+    s.gain.gain.value = vol * g;
+  }
+  $("stageMsg").textContent = !M.vclips.length ? "Add videos from the Videos tab" : !M.video_ok && !act.some(i => M.sources[M.vclips[i].skey]?.ok) && act.length ? "This video is missing" : "";
+}
 const hasFx = c => !!(c.match || (c.nr && c.nr !== "off") || c.lowcut || c.highcut || c.declick);
 const fxKey = c => `m${+!!c.match}-n${c.nr || "off"}-l${c.lowcut || 0}-h${c.highcut || 0}-d${+!!c.declick}`;
 const clipUrl = c => hasFx(c) ? `/media/mix-fx/${c.sound}?fx=${fxKey(c)}` : `/media/sound/${c.sound}`;
@@ -676,22 +1340,23 @@ async function schedule() {
   stopAll();
   const my = ++schedN;
   await Promise.all(M.clips.map(c => buffer(clipUrl(c))));
-  if (my !== schedN || V().paused) return;
-  const T = V().currentTime, now = ctx.currentTime;
+  if (my !== schedN || !playing) return;
+  const T = now(), at = ctx.currentTime, end = M.duration;
   const tg = {};
   for (const t of M.tracks) {
     if (t.mute) continue;
     const g = ctx.createGain();
     g.gain.value = dbGain(t.volume_db);
-    if ((DUCK[t.id] || []).length) duckAutomate(g.gain, DUCK[t.id], T, now, dbGain(t.volume_db));
+    if ((DUCK[t.id] || []).length) duckAutomate(g.gain, DUCK[t.id], T, at, dbGain(t.volume_db));
     g.connect(masterIn);
     tg[t.id] = g;
     live.push({stop() { g.disconnect(); }});
   }
   for (const c of M.clips) {
     const b = await bufs[clipUrl(c)];
-    if (!tg[c.track] || !b || c.start + c.length <= T) continue;
-    const into = Math.max(0, T - c.start), when = now + Math.max(0, c.start - T), rest = c.length - into;
+    const length = Math.min(c.length, end - c.start);    // the render stops at the end of the video
+    if (!tg[c.track] || !b || length <= 0 || c.start + length <= T) continue;
+    const into = Math.max(0, T - c.start), when = at + Math.max(0, c.start - T), rest = length - into;
     let off = c.offset + into;
     if (c.loop) off %= b.duration; else if (off >= b.duration) continue;
     const src = ctx.createBufferSource(), g = ctx.createGain(), pan = ctx.createStereoPanner();
@@ -703,7 +1368,7 @@ async function schedule() {
     if (c.fade_out) {
       const fs = Math.max(into, c.length - c.fade_out);
       g.gain.setValueAtTime(Math.max(0, env(fs)), when + (fs - into));
-      g.gain.linearRampToValueAtTime(0, when + rest);
+      g.gain.linearRampToValueAtTime(0, when + (c.length - into));
     }
     src.connect(g).connect(pan).connect(tg[c.track]);
     src.start(when, off);
@@ -711,22 +1376,42 @@ async function schedule() {
     live.push(src);
   }
 }
-$("playBtn").onclick = async () => {
-  if (V().paused) { await ctx.resume(); V().play(); } else V().pause();
-};
-V().addEventListener("play", () => { $("playBtn").textContent = "Pause"; schedule(); });
-V().addEventListener("pause", () => { $("playBtn").textContent = "Play"; stopAll(); });
-V().addEventListener("seeked", () => { if (!V().paused) schedule(); movePlayhead(); });
-function seek(t) { V().currentTime = t; movePlayhead(); }
+async function play() {
+  if (!M.vclips.length) return FK.toast("Add a video first.", true);
+  await ctx.resume();
+  if (T >= M.duration - 1e-3) T = 0;
+  sync(T, true);
+  // start the clock once the picture is actually moving, so they begin together
+  const first = P.find(s => s.clip && s.el.style.opacity !== "0");
+  if (first) await Promise.race([first.el.play().catch(() => {}), new Promise(r => setTimeout(r, 800))]);
+  playing = true; T0 = T; C0 = ctx.currentTime;
+  $("playBtn").textContent = "Pause";
+  sync(T, false);
+  schedule();
+}
+function pause() {
+  T = now(); playing = false; stopAll();
+  $("playBtn").textContent = "Play";
+  sync(T, true);
+}
+$("playBtn").onclick = () => playing ? pause() : play();
+function seek(t) {
+  t = Math.max(0, Math.min(Math.max(0, M.duration - 1e-3), t));
+  if (playing) { T0 = t; C0 = ctx.currentTime; sync(t, true); schedule(); } else { T = t; sync(t, true); }
+  movePlayhead();
+}
 function movePlayhead() {
-  const ph = $("ph");
-  if (ph) ph.style.left = `${HEAD + V().currentTime * pps}px`;
-  $("clock").textContent = `${fmt(V().currentTime)} / ${fmt(M.duration)}`;
+  const ph = $("ph"), t = now();
+  if (ph) ph.style.left = `${HEAD + t * pps}px`;
+  $("clock").textContent = `${fmt(t)} / ${fmt(M.duration)}`;
 }
 (function tick() {
-  if (M && !V().paused) {
+  if (M && playing) {
+    let t = now();
+    if (t >= M.duration) { pause(); T = Math.max(0, M.duration - 0.5 / M.out.fps); sync(T, true); t = T; }
+    else sync(t, false);
     movePlayhead();
-    const w = $("tlWrap"), x = HEAD + V().currentTime * pps;
+    const w = $("tlWrap"), x = HEAD + t * pps;
     if (x > w.scrollLeft + w.clientWidth - 40 || x < w.scrollLeft + HEAD) w.scrollLeft = x - HEAD - 40;
   }
   requestAnimationFrame(tick);
@@ -739,17 +1424,15 @@ function renderOutputs() {
     · <a href="/api/mixes/${MID}/file/${encodeURIComponent(o[0].file)}?dl=1">download</a>${o.length > 1 ? ` · ${o.length - 1} earlier` : ""}` : "";
 }
 $("renderBtn").onclick = async () => {
-  clearTimeout(saveT);
   try {
-    await FK.api(`/api/mixes/${MID}`, {method: "PUT", headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({name: M.name, original: M.original, tracks: M.tracks, clips: M.clips})});
+    await saveNow();
     const j = await FK.runJob(`/api/mixes/${MID}/render`, {library: $("toLib").checked}, $("bar"), $("barLbl"));
     FK.toast(`Rendered ${j.result.file}`);
     M = Object.assign(M, {outputs: (await FK.api(`/api/mixes/${MID}`)).outputs});
     renderOutputs();
   } catch (e) { FK.fail(e); }
 };
-window.addEventListener("resize", () => M && render());
+window.addEventListener("resize", () => { if (M) { sizeStage(); render(); } });
 
 (MID ? editView() : startView()).catch(FK.fail);
 </script>
